@@ -1,0 +1,50 @@
+digraph FSM {
+	nodesep=1.0 overlap=false rankdir=LR ranksep=1.2 splines=spline
+	RXU_RESET_IDLE [shape=circle style=bold]
+	RXU_BREAK [shape=circle]
+	RXU_IDLE [shape=circle]
+	RXU_BIT_ZERO [shape=circle]
+	RXU_BIT_ONE [shape=circle]
+	RXU_BIT_TWO [shape=circle]
+	RXU_BIT_THREE [shape=circle]
+	RXU_BIT_FOUR [shape=circle]
+	RXU_BIT_FIVE [shape=circle]
+	RXU_BIT_SIX [shape=circle]
+	RXU_BIT_SEVEN [shape=circle]
+	RXU_PARITY [shape=circle]
+	RXU_STOP [shape=circle]
+	RXU_SECOND_STOP [shape=circle]
+	RXU_STOP -> RXU_IDLE
+	RXU_BIT_FOUR -> RXU_BREAK [label=o_break]
+	RXU_BIT_FIVE -> RXU_BREAK [label=o_break]
+	RXU_BIT_ONE -> RXU_BREAK [label=o_break]
+	RXU_SECOND_STOP -> RXU_IDLE
+	RXU_STOP -> RXU_RESET_IDLE
+	RXU_BIT_THREE -> RXU_BREAK [label=o_break]
+	RXU_IDLE -> RXU_BIT_TWO
+	RXU_SECOND_STOP -> RXU_RESET_IDLE
+	RXU_BIT_SEVEN -> RXU_PARITY
+	RXU_IDLE -> RXU_BIT_ONE
+	RXU_BIT_FIVE -> RXU_BIT_SIX [label=zero_baud_counter]
+	RXU_SECOND_STOP -> RXU_BREAK [label=o_break]
+	RXU_STOP -> RXU_SECOND_STOP [label=dblstop]
+	RXU_BIT_THREE -> RXU_BIT_FOUR [label=zero_baud_counter]
+	RXU_BREAK -> RXU_IDLE [label=ck_uart]
+	RXU_BIT_ZERO -> RXU_BIT_ONE [label=zero_baud_counter]
+	RXU_STOP -> RXU_BREAK [label=o_break]
+	RXU_BIT_SIX -> RXU_BIT_SEVEN [label=zero_baud_counter]
+	RXU_PARITY -> RXU_BREAK [label=o_break]
+	RXU_BIT_SIX -> RXU_BREAK [label=o_break]
+	RXU_IDLE -> RXU_BIT_THREE
+	RXU_BIT_SEVEN -> RXU_STOP
+	RXU_BIT_FOUR -> RXU_BIT_FIVE [label=zero_baud_counter]
+	RXU_PARITY -> RXU_STOP [label=zero_baud_counter]
+	RXU_RESET_IDLE -> RXU_IDLE [label=line_synch]
+	RXU_IDLE -> RXU_BIT_ZERO
+	RXU_BIT_ONE -> RXU_BIT_TWO [label=zero_baud_counter]
+	RXU_BIT_ZERO -> RXU_BREAK [label=o_break]
+	RXU_BIT_TWO -> RXU_BREAK [label=o_break]
+	RXU_BIT_SEVEN -> RXU_BREAK [label=o_break]
+	RXU_IDLE -> RXU_BREAK [label=o_break]
+	RXU_BIT_TWO -> RXU_BIT_THREE [label=zero_baud_counter]
+}
