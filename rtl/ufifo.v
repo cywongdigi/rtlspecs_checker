@@ -50,10 +50,10 @@ module ufifo(i_clk, i_rst, i_wr, i_data, o_empty_n, i_rd, o_data, o_status, o_er
 	parameter 	RXFIFO=1'b0;
 	input	wire		i_clk, i_rst;
 	input	wire		i_wr;
-	input	wire [(BW-1):0]	i_data;
+	input	wire [7:0]	i_data;
 	output	wire		o_empty_n;	// True if something is in FIFO
 	input	wire		i_rd;
-	output	wire [(BW-1):0]	o_data;
+	output	wire [7:0]	o_data;
 	output	wire	[15:0]	o_status;
 	output	wire		o_err;
  

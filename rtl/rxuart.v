@@ -11,7 +11,7 @@
 //	pass it the 32 bit setup register (defined below) and the UART
 //	input.  When data becomes available, the o_wr line will be asserted
 //	for one clock cycle.  On parity or frame errors, the o_parity_err
-//	or o_frame_err lines will be asserted.  Likewise, on a break 
+//	or o_frame_err lines will be asserted.  Likewise, on a break
 //	condition, o_break will be asserted.  These lines are self clearing.
 //
 //	There is a synchronous reset line, logic high.
@@ -51,13 +51,13 @@
 //		to run this serial port at 115200 baud from a 200 MHz clock,
 //		you would set the value to 24'd1736
 //
-//	Thus, to set the UART for the common setting of an 8-bit word, 
+//	Thus, to set the UART for the common setting of an 8-bit word,
 //	one stop bit, no parity, and 115200 baud over a 200 MHz clock, you
 //	would want to set the setup value to:
 //
 //	32'h0006c8		// For 115,200 baud, 8 bit, no parity
 //	32'h005161		// For 9600 baud, 8 bit, no parity
-//	
+//
 //
 //
 // Creator:	Dan Gisselquist, Ph.D.
@@ -89,34 +89,9 @@
 ////////////////////////////////////////////////////////////////////////////////
 //
 //
-`default_nettype	none
-//
-// States: (@ baud counter == 0)
-//	0	First bit arrives
-//	..7	Bits arrive
-//	8	Stop bit (x1)
-//	9	Stop bit (x2)
-//	c	break condition
-//	d	Waiting for the channel to go high
-//	e	Waiting for the reset to complete
-//	f	Idle state
-`define	RXU_BIT_ZERO		4'h0
-`define	RXU_BIT_ONE		4'h1
-`define	RXU_BIT_TWO		4'h2
-`define	RXU_BIT_THREE		4'h3
-`define	RXU_BIT_FOUR		4'h4
-`define	RXU_BIT_FIVE		4'h5
-`define	RXU_BIT_SIX		4'h6
-`define	RXU_BIT_SEVEN		4'h7
-`define	RXU_PARITY		4'h8
-`define	RXU_STOP		4'h9
-`define	RXU_SECOND_STOP		4'ha
-// Unused 4'hb
-// Unused 4'hc
-`define	RXU_BREAK		4'hd
-`define	RXU_RESET_IDLE		4'he
-`define	RXU_IDLE		4'hf
- 
+
+`default_nettype none
+
 module rxuart(i_clk, i_reset, i_setup, i_uart_rx, o_wr, o_data, o_break,
 			o_parity_err, o_frame_err, o_ck_uart);
 	parameter [30:0] INITIAL_SETUP = 31'd868;
@@ -131,14 +106,40 @@ module rxuart(i_clk, i_reset, i_setup, i_uart_rx, o_wr, o_data, o_break,
 	output	reg		o_break;
 	output	reg		o_parity_err, o_frame_err;
 	output	wire		o_ck_uart;
- 
- 
+
+	// States: (@ baud counter == 0)
+		// 0	First bit arrives
+		// ..7	Bits arrive
+		// 8	Stop bit (x1)
+		// 9	Stop bit (x2)
+		// c	break condition
+		// d	Waiting for the channel to go high
+		// e	Waiting for the reset to complete
+		// f	Idle state
+
+	localparam [3:0] RXU_BIT_ZERO	 = 4'h0;
+	localparam [3:0] RXU_BIT_ONE	 = 4'h1;
+	localparam [3:0] RXU_BIT_TWO	 = 4'h2;
+	localparam [3:0] RXU_BIT_THREE	 = 4'h3;
+	localparam [3:0] RXU_BIT_FOUR	 = 4'h4;
+	localparam [3:0] RXU_BIT_FIVE	 = 4'h5;
+	localparam [3:0] RXU_BIT_SIX	 = 4'h6;
+	localparam [3:0] RXU_BIT_SEVEN	 = 4'h7;
+	localparam [3:0] RXU_PARITY		 = 4'h8;
+	localparam [3:0] RXU_STOP		 = 4'h9;
+	localparam [3:0] RXU_SECOND_STOP = 4'ha;
+	// Unused 4'hb
+	// Unused 4'hc
+	localparam [3:0] RXU_BREAK		 = 4'hd;
+	localparam [3:0] RXU_RESET_IDLE	 = 4'he;
+	localparam [3:0] RXU_IDLE		 = 4'hf;
+
 	wire	[27:0]	clocks_per_baud, break_condition, half_baud;
 	wire	[1:0]	data_bits;
 	wire		use_parity, parity_even, dblstop, fixd_parity;
 	reg	[29:0]	r_setup;
-	reg	[3:0]	state;
- 
+	reg	[3:0]	state, nxt_state;
+
 	assign	clocks_per_baud = { 4'h0, r_setup[23:0] };
 	// assign hw_flow_control = !r_setup[30];
 	assign	data_bits   = r_setup[29:28];
@@ -150,10 +151,10 @@ module rxuart(i_clk, i_reset, i_setup, i_uart_rx, o_wr, o_data, o_break,
 	assign	half_baud = { 5'h00, r_setup[23:1] }-28'h1;
 	reg	[27:0]	baud_counter;
 	reg		zero_baud_counter;
- 
- 
+
+
 	// Since this is an asynchronous receiver, we need to register our
-	// input a couple of clocks over to avoid any problems with 
+	// input a couple of clocks over to avoid any problems with
 	// metastability.  We do that here, and then ignore all but the
 	// ck_uart wire.
 	reg	q_uart, qq_uart, ck_uart;
@@ -166,11 +167,11 @@ module rxuart(i_clk, i_reset, i_setup, i_uart_rx, o_wr, o_data, o_break,
 		qq_uart <= q_uart;
 		ck_uart <= qq_uart;
 	end
- 
+
 	// In case anyone else wants this clocked, stabilized value, we
 	// offer it on our output.
 	assign	o_ck_uart = ck_uart;
- 
+
 	// Keep track of the number of clocks since the last change.
 	//
 	// This is used to determine if we are in either a break or an idle
@@ -184,7 +185,7 @@ module rxuart(i_clk, i_reset, i_setup, i_uart_rx, o_wr, o_data, o_break,
 			chg_counter <= 28'h00;
 		else if (chg_counter < break_condition)
 			chg_counter <= chg_counter + 1;
- 
+
 	// Are we in a break condition?
 	//
 	// A break condition exists if the line is held low for longer than
@@ -195,7 +196,7 @@ module rxuart(i_clk, i_reset, i_setup, i_uart_rx, o_wr, o_data, o_break,
 	initial	o_break    = 1'b0;
 	always @(posedge i_clk)
 		o_break <= ((chg_counter >= break_condition)&&(~ck_uart))? 1'b1:1'b0;
- 
+
 	// Are we between characters?
 	//
 	// The opposite of a break condition is where the line is held high
@@ -210,7 +211,7 @@ module rxuart(i_clk, i_reset, i_setup, i_uart_rx, o_wr, o_data, o_break,
 	initial	line_synch = 1'b0;
 	always @(posedge i_clk)
 		line_synch <= ((chg_counter >= break_condition)&&(ck_uart));
- 
+
 	// Are we in the middle of a baud iterval?  Specifically, are we
 	// in the middle of a start bit?  Set this to high if so.  We'll use
 	// this within our state machine to transition out of the IDLE
@@ -219,22 +220,22 @@ module rxuart(i_clk, i_reset, i_setup, i_uart_rx, o_wr, o_data, o_break,
 	initial	half_baud_time = 0;
 	always @(posedge i_clk)
 		half_baud_time <= (~ck_uart)&&(chg_counter >= half_baud);
- 
- 
+
+
 	// Allow our controlling processor to change our setup at any time
 	// outside of receiving/processing a character.
 	initial	r_setup     = INITIAL_SETUP[29:0];
 	always @(posedge i_clk)
-		if (state >= `RXU_RESET_IDLE)
+		if (state >= RXU_RESET_IDLE)
 			r_setup <= i_setup[29:0];
- 
- 
+
+
 	// Our monster state machine.  YIKES!
 	//
 	// Yeah, this may be more complicated than it needs to be.  The basic
 	// progression is:
 	//	RESET -> RESET_IDLE -> (when line is idle) -> IDLE
-	//	IDLE -> bit 0 -> bit 1 -> bit_{ndatabits} -> 
+	//	IDLE -> bit 0 -> bit 1 -> bit_{ndatabits} ->
 	//		(optional) PARITY -> STOP -> (optional) SECOND_STOP
 	//		-> IDLE
 	//	ANY -> (on break) BREAK -> IDLE
@@ -255,69 +256,165 @@ module rxuart(i_clk, i_reset, i_setup, i_uart_rx, o_wr, o_data, o_break,
 	//	Logic outputs (4):
 	//		state
 	//
-	initial	state = `RXU_RESET_IDLE;
-	always @(posedge i_clk)
-	begin
+
+	always @(posedge i_clk) begin
 		if (i_reset)
-			state <= `RXU_RESET_IDLE;
-		else if (state == `RXU_RESET_IDLE)
-		begin
-			if (line_synch)
-				// Goto idle state from a reset
-				state <= `RXU_IDLE;
-			else // Otherwise, stay in this condition 'til reset
-				state <= `RXU_RESET_IDLE;
-		end else if (o_break)
-		begin // We are in a break condition
-			state <= `RXU_BREAK;
-		end else if (state == `RXU_BREAK)
-		begin // Goto idle state following return ck_uart going high
-			if (ck_uart)
-				state <= `RXU_IDLE;
-			else
-				state <= `RXU_BREAK;
-		end else if (state == `RXU_IDLE)
-		begin // Idle state, independent of baud counter
-			if ((~ck_uart)&&(half_baud_time))
-			begin
-				// We are in the center of a valid start bit
-				case (data_bits)
-				2'b00: state <= `RXU_BIT_ZERO;
-				2'b01: state <= `RXU_BIT_ONE;
-				2'b10: state <= `RXU_BIT_TWO;
-				2'b11: state <= `RXU_BIT_THREE;
-				endcase
-			end else // Otherwise, just stay here in idle
-				state <= `RXU_IDLE;
-		end else if (zero_baud_counter)
-		begin
-			if (state < `RXU_BIT_SEVEN)
-				// Data arrives least significant bit first.
-				// By the time this is clocked in, it's what
-				// you'll have.
-				state <= state + 1;
-			else if (state == `RXU_BIT_SEVEN)
-				state <= (use_parity) ? `RXU_PARITY:`RXU_STOP;
-			else if (state == `RXU_PARITY)
-				state <= `RXU_STOP;
-			else if (state == `RXU_STOP)
-			begin // Stop (or parity) bit(s)
-				if (~ck_uart) // On frame error, wait 4 ch idle
-					state <= `RXU_RESET_IDLE;
-				else if (dblstop)
-					state <= `RXU_SECOND_STOP;
-				else
-					state <= `RXU_IDLE;
-			end else // state must equal RX_SECOND_STOP
-			begin
-				if (~ck_uart) // On frame error, wait 4 ch idle
-					state <= `RXU_RESET_IDLE;
-				else
-					state <= `RXU_IDLE;
-			end
-		end
+			state <= RXU_RESET_IDLE;
+		else
+			state <= nxt_state;
 	end
- 
+
+	always @(*) begin
+		nxt_state = state;
+
+		case (state)
+			RXU_RESET_IDLE:		begin
+									if (line_synch)
+										nxt_state = RXU_IDLE;						// Goto idle state from a reset
+									else
+										nxt_state = RXU_RESET_IDLE;					// Otherwise, stay in this condition 'til reset
+								end
+
+			RXU_BREAK:			begin
+									if (o_break)
+										nxt_state = RXU_BREAK;
+									else if (ck_uart)
+										nxt_state = RXU_IDLE;		 				// Goto idle state following return ck_uart going high
+									else
+										nxt_state = RXU_BREAK;
+								end
+
+			RXU_IDLE:			begin
+									if (o_break)
+										nxt_state = RXU_BREAK;
+									else if (~ck_uart & half_baud_time) begin		// We are in the center of a valid start bit
+										case (data_bits)
+											2'b00:		nxt_state = RXU_BIT_ZERO;
+											2'b01:		nxt_state = RXU_BIT_ONE;
+											2'b10:		nxt_state = RXU_BIT_TWO;
+											2'b11:		nxt_state = RXU_BIT_THREE;
+											default:	nxt_state = RXU_BIT_ZERO;
+										endcase
+									end
+									else
+										nxt_state = RXU_IDLE;						// Otherwise, just stay here in idle
+								end
+
+			RXU_BIT_ZERO:		begin
+									if (o_break)
+										nxt_state = RXU_BREAK;
+									else if (zero_baud_counter)
+										nxt_state = RXU_BIT_ONE;
+									else
+										nxt_state = RXU_BIT_ZERO;
+								end
+
+			RXU_BIT_ONE:		begin
+									if (o_break)
+										nxt_state = RXU_BREAK;
+									else if (zero_baud_counter)
+										nxt_state = RXU_BIT_TWO;
+									else
+										nxt_state = RXU_BIT_ONE;
+								end
+
+			RXU_BIT_TWO:		begin
+									if (o_break)
+										nxt_state = RXU_BREAK;
+									else if (zero_baud_counter)
+										nxt_state = RXU_BIT_THREE;
+									else
+										nxt_state = RXU_BIT_TWO;
+								end
+
+			RXU_BIT_THREE:		begin
+									if (o_break)
+										nxt_state = RXU_BREAK;
+									else if (zero_baud_counter)
+										nxt_state = RXU_BIT_FOUR;
+									else
+										nxt_state = RXU_BIT_THREE;
+								end
+
+			RXU_BIT_FOUR:		begin
+									if (o_break)
+										nxt_state = RXU_BREAK;
+									else if (zero_baud_counter)
+										nxt_state = RXU_BIT_FIVE;
+									else
+										nxt_state = RXU_BIT_FOUR;
+								end
+
+			RXU_BIT_FIVE:		begin
+									if (o_break)
+										nxt_state = RXU_BREAK;
+									else if (zero_baud_counter)
+										nxt_state = RXU_BIT_SIX;
+									else
+										nxt_state = RXU_BIT_FIVE;
+								end
+
+			RXU_BIT_SIX:		begin
+									if (o_break)
+										nxt_state = RXU_BREAK;
+									else if (zero_baud_counter)
+										nxt_state = RXU_BIT_SEVEN;
+									else
+										nxt_state = RXU_BIT_SIX;
+								end
+
+            RXU_BIT_SEVEN: 		begin
+									if (o_break)
+										nxt_state = RXU_BREAK;
+									else if (zero_baud_counter)
+										if (use_parity)
+											nxt_state = RXU_PARITY;
+										else
+											nxt_state = RXU_STOP;
+									else
+										nxt_state = RXU_BIT_SEVEN;
+								end
+								
+            RXU_PARITY: 		begin
+									if (o_break)
+										nxt_state = RXU_BREAK;
+									else if (zero_baud_counter)
+										nxt_state = RXU_STOP;
+									else
+										nxt_state = RXU_PARITY;
+								end								
+
+            RXU_STOP: 			begin
+									if (o_break)
+										nxt_state = RXU_BREAK;
+									else if (zero_baud_counter)
+										if (~ck_uart)
+											nxt_state = RXU_RESET_IDLE;
+										else if (dblstop)
+											nxt_state = RXU_SECOND_STOP;
+										else
+											nxt_state = RXU_IDLE;
+									else
+										nxt_state = RXU_STOP;
+								end
+
+            RXU_SECOND_STOP: 	begin
+									if (o_break)
+										nxt_state = RXU_BREAK;
+									else if (zero_baud_counter)
+										if (~ck_uart)
+											nxt_state = RXU_RESET_IDLE;
+										else
+											nxt_state = RXU_IDLE;
+									else
+										nxt_state = RXU_SECOND_STOP;
+								end
+
+			default:			nxt_state = RXU_RESET_IDLE;
+		endcase
+
+	end
+
 	// Data bit capture logic.
 	//
 	// This is drastically simplified from the state machine above, based
@@ -329,9 +426,9 @@ module rxuart(i_clk, i_reset, i_setup, i_uart_rx, o_wr, o_data, o_break,
 	// updated.
 	reg	[7:0]	data_reg;
 	always @(posedge i_clk)
-		if ((zero_baud_counter)&&(state != `RXU_PARITY))
+		if ((zero_baud_counter)&&(state != RXU_PARITY))
 			data_reg <= { ck_uart, data_reg[7:1] };
- 
+
 	// Parity calculation logic
 	//
 	// As with the data capture logic, all that must be known about this
@@ -345,18 +442,20 @@ module rxuart(i_clk, i_reset, i_setup, i_uart_rx, o_wr, o_data, o_break,
 	// reset before any transmission takes place.
 	reg		calc_parity;
 	always @(posedge i_clk)
-		if (state == `RXU_IDLE)
+		if (i_reset)
+			calc_parity <= 1'b0;
+		else if (state == RXU_IDLE)
 			calc_parity <= 0;
 		else if (zero_baud_counter)
 			calc_parity <= calc_parity ^ ck_uart;
- 
+
 	// Parity error logic
 	//
 	// Set during the parity bit interval, read during the last stop bit
 	// interval, cleared on BREAK, RESET_IDLE, or IDLE states.
 	initial	o_parity_err = 1'b0;
 	always @(posedge i_clk)
-		if ((zero_baud_counter)&&(state == `RXU_PARITY))
+		if ((zero_baud_counter)&&(state == RXU_PARITY))
 		begin
 			if (fixd_parity)
 				// Fixed parity bit--independent of any dat
@@ -370,9 +469,9 @@ module rxuart(i_clk, i_reset, i_setup, i_uart_rx, o_wr, o_data, o_break,
 				// Parity odd: the parity bit must equal the
 				// XOR of all the data bits.
 				o_parity_err <= (calc_parity == ck_uart);
-		end else if (state >= `RXU_BREAK)
+		end else if (state >= RXU_BREAK)
 			o_parity_err <= 1'b0;
- 
+
 	// Frame error determination
 	//
 	// For the purpose of this controller, a frame error is defined as a
@@ -383,19 +482,19 @@ module rxuart(i_clk, i_reset, i_setup, i_uart_rx, o_wr, o_data, o_break,
 	// most importantly in RXU_IDLE.
 	initial	o_frame_err  = 1'b0;
 	always @(posedge i_clk)
-		if ((zero_baud_counter)&&((state == `RXU_STOP)
-						||(state == `RXU_SECOND_STOP)))
+		if ((zero_baud_counter)&&((state == RXU_STOP)
+						||(state == RXU_SECOND_STOP)))
 			o_frame_err <= (o_frame_err)||(~ck_uart);
-		else if ((zero_baud_counter)||(state >= `RXU_BREAK))
+		else if ((zero_baud_counter)||(state >= RXU_BREAK))
 			o_frame_err <= 1'b0;
- 
+
 	// Our data bit logic doesn't need nearly the complexity of all that
 	// work above.  Indeed, we only need to know if we are at the end of
 	// a stop bit, in which case we copy the data_reg into our output
 	// data register, o_data.
 	//
 	// We would also set o_wr to be true when this is the case, but ... we
-	// won't know if there is a frame error on the second stop bit for 
+	// won't know if there is a frame error on the second stop bit for
 	// another baud interval yet.  So, instead, we set up the logic so that
 	// we know on the next zero baud counter that we can write out.  That's
 	// the purpose of pre_wr.
@@ -407,7 +506,7 @@ module rxuart(i_clk, i_reset, i_setup, i_uart_rx, o_wr, o_data, o_break,
 		begin
 			pre_wr <= 1'b0;
 			o_data <= 8'h00;
-		end else if ((zero_baud_counter)&&(state == `RXU_STOP))
+		end else if ((zero_baud_counter)&&(state == RXU_STOP))
 		begin
 			pre_wr <= 1'b1;
 			case (data_bits)
@@ -416,20 +515,20 @@ module rxuart(i_clk, i_reset, i_setup, i_uart_rx, o_wr, o_data, o_break,
 			2'b10: o_data <= { 2'b0, data_reg[7:2] };
 			2'b11: o_data <= { 3'b0, data_reg[7:3] };
 			endcase
-		end else if ((zero_baud_counter)||(state == `RXU_IDLE))
+		end else if ((zero_baud_counter)||(state == RXU_IDLE))
 			pre_wr <= 1'b0;
- 
+
 	// Create an output strobe, true for one clock only, once we know
 	// all we need to know.  o_data will be set on the last baud interval,
 	// o_parity_err on the last parity baud interval (if it existed,
 	// cleared otherwise, so ... we should be good to go here.)
 	initial	o_wr   = 1'b0;
 	always @(posedge i_clk)
-		if ((zero_baud_counter)||(state == `RXU_IDLE))
+		if ((zero_baud_counter)||(state == RXU_IDLE))
 			o_wr <= (pre_wr)&&(!i_reset);
 		else
 			o_wr <= 1'b0;
- 
+
 	// The baud counter
 	//
 	// This is used as a "clock divider" if you will, but the clock needs
@@ -442,12 +541,12 @@ module rxuart(i_clk, i_reset, i_setup, i_uart_rx, o_wr, o_data, o_break,
 		else if (zero_baud_counter)
 			baud_counter <= clocks_per_baud-28'h01;
 		else case(state)
-			`RXU_RESET_IDLE:baud_counter <= clocks_per_baud-28'h01;
-			`RXU_BREAK:	baud_counter <= clocks_per_baud-28'h01;
-			`RXU_IDLE:	baud_counter <= clocks_per_baud-28'h01;
+			RXU_RESET_IDLE:baud_counter <= clocks_per_baud-28'h01;
+			RXU_BREAK:	baud_counter <= clocks_per_baud-28'h01;
+			RXU_IDLE:	baud_counter <= clocks_per_baud-28'h01;
 			default:	baud_counter <= baud_counter-28'h01;
 		endcase
- 
+
 	// zero_baud_counter
 	//
 	// Rather than testing whether or not (baud_counter == 0) within our
@@ -456,10 +555,9 @@ module rxuart(i_clk, i_reset, i_setup, i_uart_rx, o_wr, o_data, o_break,
 	// before--cleaning up some otherwise difficult timing dependencies.
 	initial	zero_baud_counter = 1'b0;
 	always @(posedge i_clk)
-		if (state == `RXU_IDLE)
+		if (state == RXU_IDLE)
 			zero_baud_counter <= 1'b0;
 		else
 		zero_baud_counter <= (baud_counter == 28'h01);
- 
- 
+
 endmodule

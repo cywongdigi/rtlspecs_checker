@@ -127,14 +127,7 @@ module	wbuart(i_clk, i_rst,
 	// the UART input, a clock, and a reset line, and produces outputs:
 	// a stb (true when new data is ready), and an 8-bit data out value
 	// valid when stb is high.
-`ifdef	USE_LITE_UART
-	rxuartlite	#(INITIAL_SETUP[23:0])
-		rx(i_clk, i_uart_rx, rx_stb, rx_uart_data);
-	assign	rx_break = 1'b0;
-	assign	rx_perr  = 1'b0;
-	assign	rx_ferr  = 1'b0;
-	assign	ck_uart  = 1'b0;
-`else
+
 	// The full receiver also produces a break value (true during a break
 	// cond.), and parity/framing error flags--also valid when stb is true.
 	rxuart	#(INITIAL_SETUP) rx(i_clk, (i_rst)||(rx_uart_reset),
@@ -143,9 +136,7 @@ module	wbuart(i_clk, i_rst,
 			rx_perr, rx_ferr, ck_uart);
 	// The real trick is ... now that we have this extra data, what do we do
 	// with it?
-`endif
- 
- 
+
 	// We place it into a receiver FIFO.
 	//
 	// Here's the declarations for the wires it needs.
@@ -347,11 +338,7 @@ module	wbuart(i_clk, i_rst,
 			tx_uart_reset <= i_wb_data[12];
 		else
 			tx_uart_reset <= 1'b0;
- 
-`ifdef	USE_LITE_UART
-	txuartlite #(INITIAL_SETUP[23:0]) tx(i_clk, (tx_empty_n), tx_data,
-			o_uart_tx, tx_busy);
-`else
+
 	wire	cts_n;
 	assign	cts_n = (HARDWARE_FLOW_CONTROL_PRESENT)&&(i_cts_n);
 	// Finally, the UART transmitter module itself.  Note that we haven't
@@ -366,8 +353,7 @@ module	wbuart(i_clk, i_rst,
 	txuart	#(INITIAL_SETUP) tx(i_clk, 1'b0, uart_setup,
 			r_tx_break, (tx_empty_n), tx_data,
 			cts_n, o_uart_tx, tx_busy);
-`endif
- 
+
 	// Now that we are done with the chain, pick some wires for the user
 	// to read on any read of the transmit port.
 	//
