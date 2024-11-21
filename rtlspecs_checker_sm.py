@@ -1286,11 +1286,11 @@ def main():
             if rtl_state_machine:
                 print_single_state_machine_info(rtl_state_machine)
 
-                # Get the specifications chapter content
-                specs_chapter_content = state_machine_chapter['content']
-
-                # Compare State Machines
-                final_results.append(compare_state_machines(rtl_state_machine, specs_chapter_content, module_name))
+                # # Get the specifications chapter content
+                # specs_chapter_content = state_machine_chapter['content']
+                #
+                # # Compare State Machines
+                # final_results.append(compare_state_machines(rtl_state_machine, specs_chapter_content, module_name))
             else:
                 print(f"[ERROR] State machine information not found in RTL for module {module_name}.")
         else:
