@@ -5,9 +5,10 @@ import io
 import openai
 import csv
 import docx
+import sympy
 from pyverilog.vparser.parser import parse
 from pyverilog.vparser.ast import (
-    Node, Decl, Reg, Localparam, Parameter, IntConst, StringConst, Identifier,
+    Node, Decl, Reg, Wire, Localparam, Parameter, IntConst, StringConst, Identifier,
     Partselect, Pointer, NonblockingSubstitution,
     BlockingSubstitution, IfStatement, CaseStatement, Block, Repeat,
     Concat, LConcat, CasezStatement, Case, Assign, Always,
@@ -17,7 +18,7 @@ from pyverilog.vparser.ast import (
     Plus, Minus, Times, Divide, Mod, Power, Eq, Eql, NotEq, NotEql,
     GreaterThan, GreaterEq, LessThan, LessEq, And, Or, Xor, Xnor,
     Land, Lor, Sll, Srl, Sra, Uplus, Uminus, Ulnot, Unot,
-    Uand, Unand, Uor, Unor, Uxor, Uxnor
+    Uand, Unand, Uor, Unor, Uxor, Uxnor,
 )
 from docx import Document
 from docx.document import Document as _Document
@@ -29,6 +30,8 @@ from PIL import Image
 from openai import OpenAI
 import traceback  # For exception handling
 from collections import defaultdict, deque
+from sympy import symbols, S
+from sympy.logic.boolalg import Boolean, BooleanFunction, And as SymAnd, Or as SymOr, Not as SymNot
 
 # Load your OpenAI API key from the environment variable
 openai.api_key = os.getenv('OPENAI_API_KEY')
@@ -816,24 +819,8 @@ class StateMachine:
         self.transitions = []  # List of transitions, each as (current_state, condition, next_state)
 
 
-# def extract_state_machines_from_asts(asts):
-#     state_machines = {}
-#     for ast in asts:
-#         for description in ast.description.definitions:
-#             if hasattr(description, 'name'):
-#                 module_name = description.name
-#                 state_machine = StateMachine(module_name)
-#                 module_definitions = description.items
-#                 # Extract state variable names and state parameters
-#                 extract_state_variables_and_parameters(module_definitions, state_machine)
-#                 # Find state update and state transition always blocks
-#                 find_state_always_blocks(module_definitions, state_machine)
-#                 if state_machine.state_var and state_machine.transitions:
-#                     state_machines[module_name] = state_machine
-#     return state_machines
 
-
-def extract_state_machines_from_asts(asts):
+def extract_state_machines_from_asts(asts, module_definitions):
     state_machines = {}
     target_module = 'rxuart'  # Specify the module you want to process
     for ast in asts:
@@ -843,20 +830,22 @@ def extract_state_machines_from_asts(asts):
                 if module_name != target_module:
                     continue  # Skip modules that are not the target module
                 state_machine = StateMachine(module_name)
-                module_definitions = description.items
-
-                # Add debug statements to list module items
-                if DEBUG:
-                    for item in module_definitions:
-                        print(f"Module item: {type(item).__name__}")
+                module_items = description.items
 
                 # Extract state variable names and state parameters
-                extract_state_variables_and_parameters(module_definitions, state_machine)
+                extract_state_variables_and_parameters(module_items, state_machine)
+
+                # Collect known variables
+                known_vars = collect_known_vars(state_machine, module_definitions)
+
                 # Find state update and state transition always blocks
-                find_state_always_blocks(module_definitions, state_machine)
+                find_state_always_blocks(module_items, state_machine, known_vars)
+
                 if state_machine.state_var and state_machine.transitions:
                     state_machines[module_name] = state_machine
     return state_machines
+
+
 
 
 def extract_state_variables_and_parameters(module_items, state_machine):
@@ -875,7 +864,7 @@ def extract_state_variables_and_parameters(module_items, state_machine):
                                 print(f"Found next state variable: {state_machine.next_state_var}")
 
 
-def find_state_always_blocks(module_items, state_machine):
+def find_state_always_blocks(module_items, state_machine, known_vars):
     for item in module_items:
         if isinstance(item, Always):
             if DEBUG:
@@ -889,8 +878,12 @@ def find_state_always_blocks(module_items, state_machine):
                 if DEBUG:
                     print(f"Found state transition always block in module {state_machine.module_name}")
                 # Start extraction with collect_states=True
-                extract_state_transitions(item.statement, state_machine, collect_states=True)
-
+                extract_state_transitions(
+                    item.statement,
+                    state_machine,
+                    collect_states=True,
+                    known_vars=known_vars
+                )
 
 
 def get_assigned_vars(statement):
@@ -930,8 +923,88 @@ def extract_identifiers(node):
             identifiers.update(extract_identifiers(child))
     return identifiers
 
+def collect_known_vars(state_machine, module_definitions):
+    """
+    Collects known variable names from the state machine and module definitions.
+    """
+    known_vars = set()
 
-def extract_state_transitions(statement, state_machine, current_state=None, condition='', collect_states=False):
+    # Add state variables
+    known_vars.add(state_machine.state_var)
+    if state_machine.next_state_var:
+        known_vars.add(state_machine.next_state_var)
+
+    # Add input, output, inout, reg, and wire names from the module
+    module_name = state_machine.module_name
+    module_def = module_definitions.get(module_name)
+    if module_def:
+        for item in module_def.items:
+            if isinstance(item, Decl):
+                for decl in item.list:
+                    if isinstance(decl, (Input, Output, Inout, Reg, Wire)):
+                        known_vars.add(decl.name)
+
+        # Collect identifiers from the module's statements
+        for item in module_def.items:
+            if isinstance(item, Always):
+                collect_identifiers_from_statements(item.statement, known_vars)
+
+    return known_vars
+
+def collect_identifiers_from_statements(statement, known_vars):
+    if isinstance(statement, Identifier):
+        known_vars.add(statement.name)
+    elif hasattr(statement, 'children'):
+        for child in statement.children():
+            collect_identifiers_from_statements(child, known_vars)
+    elif isinstance(statement, list):
+        for stmt in statement:
+            collect_identifiers_from_statements(stmt, known_vars)
+    elif isinstance(statement, (Block, IfStatement, CaseStatement,
+                                NonblockingSubstitution, BlockingSubstitution, Assign)):
+        # Recursively collect from these statement types
+        if hasattr(statement, 'statement'):
+            collect_identifiers_from_statements(statement.statement, known_vars)
+        if hasattr(statement, 'true_statement'):
+            collect_identifiers_from_statements(statement.true_statement, known_vars)
+        if hasattr(statement, 'false_statement') and statement.false_statement:
+            collect_identifiers_from_statements(statement.false_statement, known_vars)
+        if hasattr(statement, 'statements'):
+            for stmt in statement.statements:
+                collect_identifiers_from_statements(stmt, known_vars)
+        if hasattr(statement, 'caselist'):
+            for case_item in statement.caselist:
+                collect_identifiers_from_statements(case_item.statement, known_vars)
+        if hasattr(statement, 'left'):
+            collect_identifiers_from_statements(statement.left, known_vars)
+        if hasattr(statement, 'right'):
+            collect_identifiers_from_statements(statement.right, known_vars)
+    # Handle other possible node types if necessary
+
+
+def get_module_definitions(asts):
+    module_definitions = {}
+    for ast in asts:
+        for definition in ast.description.definitions:
+            if hasattr(definition, 'name'):
+                module_name = definition.name
+                module_definitions[module_name] = definition
+    return module_definitions
+
+def extract_state_transitions(statement, state_machine, current_state=None, condition_expr=None, collect_states=False, known_vars=None):
+    """
+    Extracts state transitions from the given statement and updates the state_machine object.
+
+    :param statement: The AST node representing the statement to process.
+    :param state_machine: The StateMachine object to update.
+    :param current_state: The current state being processed.
+    :param condition_expr: The current condition as a SymPy expression.
+    :param collect_states: Boolean indicating whether to collect state names.
+    :param known_vars: Set of known variable names for accurate variable/constant identification.
+    """
+    if known_vars is None:
+        known_vars = set()
+
     if isinstance(statement, CaseStatement):
         comp_value = get_rvalue(statement.comp)
         if DEBUG:
@@ -964,7 +1037,15 @@ def extract_state_transitions(statement, state_machine, current_state=None, cond
                                 print(f"State {state_name} already in list.")
                     # Determine the next_state for recursive calls
                     next_state = state_name if state_name != 'default' else current_state
-                    extract_state_transitions(case_item.statement, state_machine, current_state=next_state, condition=condition, collect_states=False)
+                    # Continue processing with the same condition_expr
+                    extract_state_transitions(
+                        case_item.statement,
+                        state_machine,
+                        current_state=next_state,
+                        condition_expr=condition_expr,
+                        collect_states=False,
+                        known_vars=known_vars
+                    )
         else:
             if DEBUG:
                 print("Nested case statement or case on another variable")
@@ -979,28 +1060,53 @@ def extract_state_transitions(statement, state_machine, current_state=None, cond
                         if DEBUG:
                             print("Skipping default case in nested case statement")
                         continue  # Skip processing this case
-                    case_condition_str = get_condition_str(case_cond)
+                    # Convert the case condition to SymPy expression
+                    case_condition_expr = ast_to_sympy(case_cond)
                     # Combine with existing condition
-                    if condition:
-                        combined_condition = f"({condition}) && ({comp_value} == {case_condition_str})"
+                    equality_expr = sympy.Eq(ast_to_sympy(statement.comp), case_condition_expr)
+                    if condition_expr:
+                        combined_condition_expr = SymAnd(condition_expr, equality_expr)
                     else:
-                        combined_condition = f"({comp_value} == {case_condition_str})"
+                        combined_condition_expr = equality_expr
                     # Process the case item's statement
-                    extract_state_transitions(case_item.statement, state_machine, current_state=current_state, condition=combined_condition, collect_states=False)
+                    extract_state_transitions(
+                        case_item.statement,
+                        state_machine,
+                        current_state=current_state,
+                        condition_expr=combined_condition_expr,
+                        collect_states=False,
+                        known_vars=known_vars
+                    )
     elif isinstance(statement, IfStatement):
-        new_condition = get_condition_str(statement.cond)
-        if condition:
-            combined_condition = f"({condition}) && ({new_condition})"
+        new_condition_expr = ast_to_sympy(statement.cond)
+        if condition_expr:
+            combined_condition_expr = SymAnd(condition_expr, new_condition_expr)
         else:
-            combined_condition = new_condition
-        extract_state_transitions(statement.true_statement, state_machine, current_state, condition=combined_condition, collect_states=False)
+            combined_condition_expr = new_condition_expr
+        # Process the true branch
+        extract_state_transitions(
+            statement.true_statement,
+            state_machine,
+            current_state,
+            condition_expr=combined_condition_expr,
+            collect_states=False,
+            known_vars=known_vars
+        )
+        # Process the false branch
         if statement.false_statement:
-            negated_condition = f"!({new_condition})"
-            if condition:
-                combined_false_condition = f"({condition}) && ({negated_condition})"
+            negated_new_condition_expr = SymNot(new_condition_expr)
+            if condition_expr:
+                combined_false_condition_expr = SymAnd(condition_expr, negated_new_condition_expr)
             else:
-                combined_false_condition = negated_condition
-            extract_state_transitions(statement.false_statement, state_machine, current_state, condition=combined_false_condition, collect_states=False)
+                combined_false_condition_expr = negated_new_condition_expr
+            extract_state_transitions(
+                statement.false_statement,
+                state_machine,
+                current_state,
+                condition_expr=combined_false_condition_expr,
+                collect_states=False,
+                known_vars=known_vars
+            )
     elif isinstance(statement, (NonblockingSubstitution, BlockingSubstitution, Assign)):
         assigned_var = get_lvalue(statement.left)
         if assigned_var == state_machine.next_state_var or assigned_var == state_machine.state_var:
@@ -1009,9 +1115,11 @@ def extract_state_transitions(statement, state_machine, current_state=None, cond
                 next_state_name = str(next_state_name)
             if next_state_name not in [state_machine.state_var, state_machine.next_state_var]:
                 if current_state is not None:
-                    state_machine.transitions.append((current_state, condition if condition else 'default', next_state_name))
+                    # Simplify the condition expression
+                    simplified_condition = simplify_condition(condition_expr, known_vars=known_vars) if condition_expr else 'default'
+                    state_machine.transitions.append((current_state, simplified_condition, next_state_name))
                     if DEBUG:
-                        print(f"Added transition: {current_state} --({condition if condition else 'default'})--> {next_state_name}")
+                        print(f"Added transition: {current_state} --({simplified_condition})--> {next_state_name}")
                 else:
                     if DEBUG:
                         print(f"Skipped transition from None to {next_state_name}")
@@ -1020,24 +1128,162 @@ def extract_state_transitions(statement, state_machine, current_state=None, cond
                     print(f"Skipped adding transition to variable: {next_state_name}")
     elif isinstance(statement, Block):
         for stmt in statement.statements:
-            extract_state_transitions(stmt, state_machine, current_state, condition=condition, collect_states=False)
+            extract_state_transitions(
+                stmt,
+                state_machine,
+                current_state,
+                condition_expr=condition_expr,
+                collect_states=False,
+                known_vars=known_vars
+            )
     elif isinstance(statement, list):
         for stmt in statement:
-            extract_state_transitions(stmt, state_machine, current_state, condition=condition, collect_states=False)
+            extract_state_transitions(
+                stmt,
+                state_machine,
+                current_state,
+                condition_expr=condition_expr,
+                collect_states=False,
+                known_vars=known_vars
+            )
     elif hasattr(statement, 'statement'):
-        extract_state_transitions(statement.statement, state_machine, current_state, condition=condition, collect_states=False)
+        extract_state_transitions(
+            statement.statement,
+            state_machine,
+            current_state,
+            condition_expr=condition_expr,
+            collect_states=False,
+            known_vars=known_vars
+        )
     else:
-        pass
+        pass  # Handle other statement types if necessary
+
+
+
+def simplify_condition(sympy_expr, known_vars=None):
+    """
+    Simplifies the SymPy Boolean expression and converts it into a human-readable string.
+    """
+    simplified_expr = sympy.simplify_logic(sympy_expr)
+    return sympy_expr_to_str(simplified_expr, known_vars=known_vars)
+
+
+
+def negate_condition(sympy_expr):
+    """
+    Negates the SymPy Boolean expression and returns a simplified string representation.
+    """
+    negated_expr = SymNot(sympy_expr)
+    simplified_expr = sympy.simplify_logic(negated_expr)
+    return sympy_expr_to_str(simplified_expr)
+
+
+def ast_to_sympy(condition_expr):
+    """
+    Converts a Verilog AST condition expression into a SymPy Boolean expression.
+    """
+    if isinstance(condition_expr, Land):
+        left = ast_to_sympy(condition_expr.left)
+        right = ast_to_sympy(condition_expr.right)
+        return SymAnd(left, right)
+    elif isinstance(condition_expr, Lor):
+        left = ast_to_sympy(condition_expr.left)
+        right = ast_to_sympy(condition_expr.right)
+        return SymOr(left, right)
+    elif isinstance(condition_expr, (Ulnot, Unot)):
+        operand = condition_expr.right if hasattr(condition_expr, 'right') else condition_expr.var if hasattr(condition_expr, 'var') else condition_expr.expr
+        sym_operand = ast_to_sympy(operand)
+        return SymNot(sym_operand)
+    elif isinstance(condition_expr, (And, Or)):
+        left = ast_to_sympy(condition_expr.left)
+        right = ast_to_sympy(condition_expr.right)
+        return SymAnd(left, right) if isinstance(condition_expr, And) else SymOr(left, right)
+    elif isinstance(condition_expr, Eq):
+        left = ast_to_sympy(condition_expr.left)
+        right = ast_to_sympy(condition_expr.right)
+        return sympy.Eq(left, right)
+    elif isinstance(condition_expr, NotEq):
+        left = ast_to_sympy(condition_expr.left)
+        right = ast_to_sympy(condition_expr.right)
+        return SymNot(sympy.Eq(left, right))
+    elif isinstance(condition_expr, Identifier):
+        return symbols(condition_expr.name)
+    elif isinstance(condition_expr, IntConst):
+        value = condition_expr.value
+        # Preserve the original bit string as a symbol
+        return sympy.Symbol(value)
+    else:
+        # Fallback
+        return symbols(get_rvalue(condition_expr))
+
+
+
+def sympy_expr_to_str(expr, in_eq=False, known_vars=None):
+    """
+    Converts a SymPy Boolean expression into a human-readable string.
+    Ensures equality expressions are formatted as 'variable is constant'.
+    """
+    if known_vars is None:
+        known_vars = set()
+
+    if expr == S.true:
+        return 'True'
+    elif expr == S.false:
+        return 'False'
+    elif isinstance(expr, sympy.Symbol):
+        name = expr.name
+        # Check if the symbol is a known variable
+        if name in known_vars:
+            return name if in_eq else f"{name} is HIGH"  # It's a variable
+        else:
+            return name  # It's a constant
+    elif isinstance(expr, sympy.Integer):
+        return str(expr)
+    elif isinstance(expr, SymNot):
+        operand_str = sympy_expr_to_str(expr.args[0], in_eq=in_eq, known_vars=known_vars)
+        if operand_str.endswith("is HIGH"):
+            return operand_str.replace("is HIGH", "is LOW")
+        elif operand_str.endswith("is LOW"):
+            return operand_str.replace("is LOW", "is HIGH")
+        else:
+            return f"{operand_str} is LOW"
+    elif isinstance(expr, SymAnd):
+        return ' and '.join([sympy_expr_to_str(arg, known_vars=known_vars) for arg in expr.args])
+    elif isinstance(expr, SymOr):
+        return ' or '.join([sympy_expr_to_str(arg, known_vars=known_vars) for arg in expr.args])
+    elif isinstance(expr, sympy.Eq):
+        left, right = expr.args
+
+        # Determine if left and right are variables
+        left_is_var = is_variable(left, known_vars)
+        right_is_var = is_variable(right, known_vars)
+
+        # Swap sides if left is constant and right is variable
+        if not left_is_var and right_is_var:
+            left, right = right, left
+
+        left_str = sympy_expr_to_str(left, in_eq=True, known_vars=known_vars)
+        right_str = sympy_expr_to_str(right, in_eq=True, known_vars=known_vars)
+        return f"{left_str} is {right_str}"
+    else:
+        return str(expr)
+
+def is_variable(sym_expr, known_vars):
+    if isinstance(sym_expr, sympy.Symbol):
+        return sym_expr.name in known_vars
+    else:
+        return False
+
+
+
 
 
 def get_condition_str(condition):
     """
-    Converts a condition expression into a string representation.
-
-    :param condition: The AST node representing the condition.
-    :return: A string representation of the condition.
+    Converts a Verilog AST condition expression into a human-readable string representation.
     """
-    return get_rvalue(condition)
+    sympy_expr = ast_to_sympy(condition)
+    return simplify_condition(sympy_expr)
 
 
 def get_assigned_states(statement, var_name):
@@ -1070,42 +1316,34 @@ def compare_state_machines(rtl_state_machine, specs_chapter_content, module_name
 
     # Prepare the prompt
     prompt = (
-        "You are an assistant that compares state machines from RTL code and specifications. "
-        # "Your goal is to identify any mismatches between them, focusing on state names, state transitions, "
-        "Your goal is to identify any mismatches between them, focusing on state names and signal levels (HIGH or LOW) in transition conditions.\n\n"        
-        # "and exact transition conditions, including signal levels (HIGH or LOW), logical inversions, and nested conditions.\n\n"      
-        "**Important Notes:**\n"
+        "You are an assistant that compares state machines extracted from RTL code with those described in specifications. "
+        "Your goal is to identify any mismatches between them, focusing on state names and signal levels (HIGH or LOW) in transition conditions.\n\n"
+        "**Important Notes:**\n\n"
         "- **State Names Must Match Exactly:**\n"
         "  - Any differences in state names between the RTL code and the specifications should be considered a mismatch.\n"
-        "  - For example, `RXU_IDLE` and `RXU_IDLE1` are different state names and should be reported as a mismatch.\n"
+        "  - For example, `RXU_IDLE` and `RXU_IDLE1` are different state names and should be reported as a mismatch.\n\n"
         "- **Signal Levels in Transition Conditions Must Match Exactly:**\n"
         "  - Any differences in signal levels (e.g., HIGH vs. LOW) in transition conditions between the RTL code and the specifications should be considered a mismatch.\n"
-        "  - Pay close attention to whether transitions occur on signals being HIGH or LOW.\n"
+        "  - Pay close attention to whether transitions occur on signals being HIGH or LOW.\n\n"
         "- **Logical Equivalence of Conditions:**\n"
         "  - **Do not consider differences in how the logical conditions are structured, including nesting, as a mismatch if the logical conditions are equivalent.**\n"
         "  - **Only report mismatches if the logical conditions are not equivalent or if the signal levels differ.**\n"
-        "  - When comparing complex logical expressions, perform step-by-step simplification using logical identities and laws (e.g., De Morgan's laws).\n"
+        "  - When comparing complex logical expressions, perform step-by-step simplification using logical identities and laws (e.g., De Morgan's laws).\n\n"
         "- **Important Note on Condition Simplification:**\n"
         "  - When comparing transition conditions, **always simplify the RTL and specification conditions step-by-step** to their basic signal levels.\n"
         "  - **Only consider the final simplified conditions** when checking for mismatches.\n"
-        "  - **Do not report mismatches based on differences in expression structure, grouping, or use of parentheses**, as long as the signal levels are equivalent.\n"        
+        "  - **Do not report mismatches based on differences in expression structure, grouping, or use of parentheses**, as long as the signal levels are equivalent.\n\n"
         "- **Example:**\n"
-        "  - **Example 1:**\n"        
-        "  - **RTL Condition:** `(!(o_break)) && (!(((~ck_uart) & half_baud_time)))`\n"
-        "  - **Simplified RTL Condition:** `o_break` is LOW, and (`ck_uart` is HIGH or `half_baud_time` is LOW)\n"
-        "  - **Specification Condition:** `o_break` is LOW, and (`ck_uart` is HIGH or `half_baud_time` is LOW)\n"
-        "  - **Explanation:** Both conditions are logically equivalent after simplification and should be considered matching.\n"
+        "  - **Example 1:**\n"
+        "    - **RTL Condition:** `o_break is LOW and (ck_uart is HIGH or half_baud_time is LOW)`\n"
+        "    - **Specification Condition:** `o_break is LOW and (ck_uart is HIGH or half_baud_time is LOW)`\n"
+        "    - **Explanation:** Both conditions are logically equivalent and should be considered matching.\n"
         "  - **Example 2:**\n"
-        "    - **RTL Condition:** `((!(o_break)) && (zero_baud_counter)) && ((~ck_uart))`\n"
-        "    - **Simplified RTL Condition:** `o_break` is LOW, `zero_baud_counter` is HIGH, `ck_uart` is LOW\n"
-        "    - **Specification Condition:** `o_break` is LOW, `zero_baud_counter` is HIGH, `ck_uart` is LOW\n"
-        "    - **Explanation:** Both conditions are logically equivalent and should be considered matching.\n\n"        
+        "    - **RTL Condition:** `o_break is LOW and zero_baud_counter is HIGH and ck_uart is LOW`\n"
+        "    - **Specification Condition:** `o_break is LOW and zero_baud_counter is HIGH and ck_uart is LOW`\n"
+        "    - **Explanation:** Both conditions are logically equivalent and should be considered matching.\n\n"
         "- **Signal Interpretation:**\n"
-        "  - In the RTL code and Pyverilog output:\n"
-        "    - A tilde `~` before a signal (e.g., `~line_synch`) represents the logical NOT of the signal.\n"
-        "      - Therefore, `~line_synch` means `line_synch` is **LOW**.\n"
-        "    - Similarly, `!(signal)` means the signal is **LOW**.\n"
-        "      - When you see `(!(line_synch))`, it means `line_synch` is **LOW**.\n"        
+        "  - Signals can be active HIGH or active LOW, as specified.\n\n"
         "  - **Active Levels of Signals:**\n"
         "    - `line_synch` is an active HIGH signal indicating line synchronization.\n"
         "      - When `line_synch` is **HIGH**, synchronization is achieved.\n"
@@ -1115,52 +1353,31 @@ def compare_state_machines(rtl_state_machine, specs_chapter_content, module_name
         "      - When `o_break` is **LOW**, the break condition has ended.\n"
         "    - `ck_uart` is an active HIGH signal representing the UART line state.\n"
         "      - When `ck_uart` is **HIGH**, the line is idle or in a stop bit.\n"
-        "      - When `ck_uart` is **LOW**, the line is in a start bit or transmitting data.\n\n"
-        "- **Understanding Logical Equivalence and De Morgan's Laws:**\n"
-        "  - **De Morgan's Laws:**\n"
-        "    - `!(A & B) = (!A) | (!B)`\n"
-        "    - `!(A | B) = (!A) & (!B)`\n"
-        "  - **Example:**\n"
-        "    - RTL Condition: `!(((~ck_uart) & half_baud_time))`\n"
-        "    - Simplified: `(ck_uart) | (!half_baud_time)`\n"
-        "    - Specification Condition: `ck_uart` is HIGH or `half_baud_time` is LOW.\n"
-        "    - **These conditions are logically equivalent and should be considered matching.**\n"        
-        # "- **Sequential and Nested Evaluation of Conditions:**\n"
-        # "  - In the RTL code, transition conditions are evaluated sequentially using `if`, `else if`, and `else` statements.\n"
-        # "  - Nested `if` statements represent conditions that are only evaluated if the outer `if` condition is true.\n"
-        # "  - Each condition is checked **only if all previous conditions were not met** or if the nested conditions are satisfied.\n"
-        # "  - This means that the first condition has the highest priority, and subsequent conditions are evaluated based on the nesting structure.\n\n"
-        # "- **Understanding Nested Conditions:**\n"
-        # "  - For nested `if` statements, the inner conditions are dependent on the outer conditions.\n"
-        # "  - The evaluation of inner conditions occurs only when the outer conditions are satisfied.\n"
-        # "  - When comparing transition conditions, consider the combined effect of outer and inner conditions.\n\n"        
-        "**Your Task:**\n"
+        "      - When `ck_uart` is **LOW**, the line is in a start bit or transmitting data.\n"
+        "    - `zero_baud_counter`: Signal that is **HIGH** when the baud counter reaches zero.\n"
+        "    - `dblstop`: Signal that is **HIGH** when double stop bits are enabled.\n"
+        "    - `use_parity`: Signal that is **HIGH** when parity is used.\n"
+        "    - `data_bits`: A 2-bit signal indicating the number of data bits:\n"
+        "      - `2'b00`: 5 data bits\n"
+        "      - `2'b01`: 6 data bits\n"
+        "      - `2'b10`: 7 data bits\n"
+        "      - `2'b11`: 8 data bits\n"
+        "    - `half_baud_time`: Signal that is **HIGH** at half the baud rate interval.\n\n"
+        "**Your Task:**\n\n"
         "- Compare the state names in the RTL code and the specifications. Any difference in state names should be considered a mismatch.\n"
         "- Compare the transition conditions, paying close attention to signal levels (e.g., HIGH vs. LOW).\n"
         "- **Do not consider differences in how the logical conditions are structured, including nesting, as a mismatch if they are logically equivalent.**\n"
-        "- **Only report mismatches if state names differ or if signal levels in the transition conditions differ.**\n"        
+        "- **Only report mismatches if state names differ or if signal levels in the transition conditions differ.**\n"
         "- Identify any mismatches in state names, signal levels, or transition conditions.\n"
         "- Report any discrepancies, including differences in state names, signal levels, and transition conditions.\n"
         "- **State names and explicit signal levels must match exactly.**\n\n"
-        "- **Do not consider the difference in how the conditions are structured (nested vs. flat) as a mismatch if the logical conditions are equivalent, but state names and signal levels must match exactly.**\n\n"
-        "**Note:**\n"
+        "- **Do not consider differences in the structure of conditions (nested vs. flat) as a mismatch if the logical conditions are equivalent, but state names and signal levels must match exactly.**\n\n"
+        "**Note:**\n\n"
         "- If they match in all aspects, output:\n\n"
         "  [INFO ] MATCHED\n\n"
         "- If they do not match, output:\n\n"
         "  [ERROR] MISMATCHED. Provide the precise reason for the mismatch, including specific differences in state names, signal levels in transitions, or conditions.\n\n"
         "Only output the specified message, without any additional text.\n\n"
-        "**Signal Definitions:**\n"
-        "- `line_synch`: Active HIGH signal indicating line synchronization.\n"
-        "  - **HIGH**: Synchronization is achieved.\n"
-        "  - **LOW**: Synchronization is not achieved.\n"
-        "- `ck_uart`: Active HIGH signal representing the UART line state.\n"
-        "  - **HIGH**: Line is idle or in a stop bit.\n"
-        "  - **LOW**: Line is in a start bit or transmitting data.\n"
-        "- `o_break`: Active HIGH signal indicating a break condition.\n"
-        "  - **HIGH**: Break condition is active.\n"
-        "  - **LOW**: Break condition has ended.\n"
-        "- `zero_baud_counter`: Signal that is **HIGH** when the baud counter reaches zero.\n"
-        "- `dblstop`: Signal that is **HIGH** when double stop bits are enabled.\n\n"
         "**State Machines for Module `{}`:**\n\n"
         "**RTL State Machine:**\n\n"
         "{}\n\n"
@@ -1222,8 +1439,9 @@ def generate_rtl_state_machine_description(state_machine):
     for state_name in state_machine.states:
         description += f"  {state_name}\n"
     description += "\nTransitions:\n"
-    for current_state, condition, next_state in state_machine.transitions:
-        description += f"  From {current_state} -> {next_state} on {condition}\n"
+    for current_state, condition_expr, next_state in state_machine.transitions:
+        # The condition_expr is already a simplified, readable string
+        description += f"  From {current_state} -> {next_state} on {condition_expr}\n"
     return description
 
 
@@ -1264,6 +1482,9 @@ def main():
     if DEBUG:
         print_ast_contents(asts)
 
+    # Collect module definitions
+    module_definitions = get_module_definitions(asts)
+
     # Extract chapters from the Word document
     chapters = extract_text_by_chapters(spec_docx_path)
     final_results = []  # Store the results as tuples (check_name, result_content)
@@ -1276,8 +1497,8 @@ def main():
             # Add header for State Machine Check
             print("\n===== State Machine Check =====\n")
 
-            # Extract state machine from RTL
-            rtl_state_machines = extract_state_machines_from_asts(asts)
+            # Extract state machine from RTL, passing module_definitions
+            rtl_state_machines = extract_state_machines_from_asts(asts, module_definitions)
 
             # # Assuming we're focusing on the 'rxuart' module
             module_name = 'rxuart'
@@ -1286,11 +1507,11 @@ def main():
             if rtl_state_machine:
                 print_single_state_machine_info(rtl_state_machine)
 
-                # # Get the specifications chapter content
-                # specs_chapter_content = state_machine_chapter['content']
-                #
-                # # Compare State Machines
-                # final_results.append(compare_state_machines(rtl_state_machine, specs_chapter_content, module_name))
+                # Get the specifications chapter content
+                specs_chapter_content = state_machine_chapter['content']
+
+                # Compare State Machines
+                final_results.append(compare_state_machines(rtl_state_machine, specs_chapter_content, module_name))
             else:
                 print(f"[ERROR] State machine information not found in RTL for module {module_name}.")
         else:

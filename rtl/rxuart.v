@@ -276,10 +276,8 @@ module rxuart(i_clk, i_reset, i_setup, i_uart_rx, o_wr, o_data, o_break,
 								end
 
 			RXU_BREAK:			begin
-									if (o_break)
-										nxt_state = RXU_BREAK;
-									else if (ck_uart)
-										nxt_state = RXU_IDLE;		 				// Goto idle state following return ck_uart going high
+									if (ck_uart)
+										nxt_state = RXU_IDLE;						// Goto idle state following return ck_uart going high	 				
 									else
 										nxt_state = RXU_BREAK;
 								end
