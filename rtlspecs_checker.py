@@ -9,7 +9,8 @@ from pyverilog.vparser.parser import parse
 from pyverilog.vparser.ast import (
     Decl, Reg, Localparam, Parameter, IntConst, Identifier,
     UnaryOperator, Partselect, Pointer, NonblockingSubstitution,
-    BlockingSubstitution, IfStatement, CaseStatement, Block
+    BlockingSubstitution, IfStatement, CaseStatement, Block,
+    BasedNumber
 )
 from docx import Document
 from docx.document import Document as _Document
