@@ -5,12 +5,14 @@ import io
 import openai
 import csv
 import docx
+import textwrap
 from pyverilog.vparser.parser import parse
 from pyverilog.vparser.ast import (
     Decl, Reg, Localparam, Parameter, IntConst, Identifier,
-    UnaryOperator, Partselect, Pointer, NonblockingSubstitution,
-    BlockingSubstitution, IfStatement, CaseStatement, Block,
-    BasedNumber
+    UnaryOperator, Operator, Partselect, Pointer, NonblockingSubstitution,
+    BlockingSubstitution, IfStatement, CaseStatement, Block, Rvalue,
+    Input, Output, Inout, Ioport, Port,
+    InstanceList, Instance, Always, ForStatement, Assign
 )
 from docx import Document
 from docx.document import Document as _Document
@@ -135,20 +137,44 @@ def print_ast_node(node, indent):
         print(f"{indent}{node}")
 
 
+# def get_rvalue(value):
+#     if isinstance(value, IntConst):
+#         return value.value
+#     elif isinstance(value, Identifier):
+#         return value.name
+#     elif isinstance(value, UnaryOperator):
+#         # For unary operators like ~, !
+#         return f"{value.op}{get_rvalue(value.right)}"  # or something similar
+#     elif isinstance(value, Operator):
+#         # Usually a binary operator, e.g. value.left, value.op, value.right
+#         left_str = get_rvalue(value.left)
+#         right_str = get_rvalue(value.right)
+#         op_str = get_operator_symbol_by_op(value.op)
+#         return f"({left_str} {op_str} {right_str})"
+#     elif isinstance(value, Partselect):
+#         var = get_rvalue(value.var)
+#         msb = get_rvalue(value.msb)
+#         lsb = get_rvalue(value.lsb)
+#         return f"{var}[{msb}:{lsb}]"
+#     elif isinstance(value, Pointer):
+#         var = get_rvalue(value.var)
+#         ptr = get_rvalue(value.ptr)
+#         return f"{var}[{ptr}]"
+#     else:
+#         return str(value)
+
 def get_rvalue(value):
     if isinstance(value, IntConst):
-        return value.value
-    elif isinstance(value, BasedNumber):
         return value.value
     elif isinstance(value, Identifier):
         return value.name
     elif isinstance(value, UnaryOperator):
-        return f"{value.__class__.__name__} {get_rvalue(value.right)}"
-    elif isinstance(value, BinaryOperator):
-        left = get_rvalue(value.left)
-        right = get_rvalue(value.right)
-        op = get_operator_symbol(value.__class__.__name__)
-        return f"({left} {op} {right})"
+        return f"{value.op}{get_rvalue(value.right)}"
+    elif isinstance(value, Operator):
+        left_str = get_rvalue(value.left)
+        right_str = get_rvalue(value.right)
+        op_str = get_operator_symbol_by_op(value.op)
+        return f"({left_str} {op_str} {right_str})"
     elif isinstance(value, Partselect):
         var = get_rvalue(value.var)
         msb = get_rvalue(value.msb)
@@ -158,42 +184,46 @@ def get_rvalue(value):
         var = get_rvalue(value.var)
         ptr = get_rvalue(value.ptr)
         return f"{var}[{ptr}]"
+
+    elif isinstance(value, Rvalue):
+        # Rvalue is basically a simple wrapper with a single child (the actual expression).
+        # We can just recurse on its only child:
+        children = value.children()
+        if len(children) == 1:
+            return get_rvalue(children[0])
+        else:
+            # If there's more than one child (rare for a parameter), handle them as needed.
+            # For most Verilog parameters, this won't happen, so we do:
+            return ''.join(get_rvalue(ch) for ch in children)
+
     else:
+        # Fallback: Convert unknown AST nodes to string
         return str(value)
 
 
-def get_operator_symbol(op_class_name):
+def get_operator_symbol_by_op(op_str):
     operator_map = {
-        'Plus': '+',
-        'Minus': '-',
-        'Times': '*',
-        'Divide': '/',
-        'Mod': '%',
-        'Power': '**',
-        'Eq': '==',
-        'NotEq': '!=',
-        'Gt': '>',
-        'Ge': '>=',
-        'Lt': '<',
-        'Le': '<=',
-        'And': '&&',
-        'Or': '||',
-        'BitwiseAnd': '&',
-        'BitwiseOr': '|',
-        'BitwiseXor': '^',
-        'BitwiseXnor': '^~',
-        'LogicalAnd': '&&',
-        'LogicalOr': '||',
-        'ShiftLeft': '<<',
-        'ShiftRight': '>>',
-        'Unot': '!',
-        'Uand': '&',
-        'Unand': '~&',
-        'Unor': '|',
-        'Unxor': '~|',
-        'Uxor': '^',
+        '+': '+',
+        '-': '-',
+        '*': '*',
+        '/': '/',
+        '%': '%',
+        '==': '==',
+        '!=': '!=',
+        '>': '>',
+        '>=': '>=',
+        '<': '<',
+        '<=': '<=',
+        '&&': '&&',
+        '||': '||',
+        '&': '&',
+        '|': '|',
+        '^': '^',
+        '^~': '^~',
+        '<<': '<<',
+        '>>': '>>',
     }
-    return operator_map.get(op_class_name, op_class_name)
+    return operator_map.get(op_str, op_str)
 
 
 def extract_parameters_from_asts(asts):
@@ -899,8 +929,18 @@ def compare_module_hierarchy(hierarchy_trees, specs_module_hierarchy_text):
     for tree in hierarchy_trees:
         rtl_module_hierarchy_text += get_hierarchy_text(tree) + '\n'
 
-    if DEBUG:
-        print(rtl_module_hierarchy_text)
+    # -----------------------------------------------------------------
+    # 1) Print out the hierarchy from RTL and from Specs before calling GPT
+    # -----------------------------------------------------------------
+    print("RTL Module Hierarchy")
+    print("====================")
+    print(rtl_module_hierarchy_text.strip())
+
+    print("")
+    print("Specs Module Hierarchy")
+    print("======================")
+    print(specs_module_hierarchy_text.strip())
+    print("")
 
     # Prepare the prompt for GPT
     prompt = (
@@ -1144,6 +1184,27 @@ def print_clock_domains_info(clock_domains_info_dict):
             print("Clock: None")
         if module_info.has_clock_crossing:
             print(f"Clock Domains Crossing (CDC): source clock: {module_info.source_clock}, destination clock: {module_info.destination_clock}")
+
+
+def print_clock_domains_check_info(clock_domains_info_dict, specs_clock_domains_text):
+    """
+    Prints the clock-domain information from both RTL and the specifications.
+
+    :param clock_domains_info_dict: Dictionary from extract_clock_domains_from_asts(), keyed by module name,
+                                    containing clock-domain details (clocks_in_module, has_clock_crossing, etc.)
+    :param specs_clock_domains_text: The raw text (or processed text) from the specification's 'Clock Domains' chapter.
+    """
+
+    print("")
+    print("RTL Clock Domains")
+    print("=================")
+    print_clock_domains_info(clock_domains_info_dict)
+
+    print("")
+    print("Specs Clock Domains")
+    print("===================")
+    print(textwrap.fill(specs_clock_domains_text, width=80))
+    print("")
 
 
 def compare_clock_domains(clock_domains_info_dict, specs_clock_domains_text):
@@ -1504,6 +1565,28 @@ def print_reset_domain_info(reset_domain_info_dict):
             print("Reset: None")
         if module_info.has_reset_crossing:
             print(f"Reset Domain Crossing (RDC): source reset: {module_info.source_reset}, destination reset: {module_info.destination_reset}")
+
+
+def print_reset_domains_check_info(reset_domain_info_dict, specs_reset_domains_text):
+    """
+    Prints the reset-domain information from both RTL and the specifications.
+
+    :param reset_domain_info_dict: Dictionary from extract_reset_domains_from_asts(), keyed by module name,
+                                   containing reset-domain details (resets_in_module, has_reset_crossing, etc.)
+    :param specs_reset_domains_text: The raw text (or processed text) from the specification's 'Reset Domains' chapter.
+    """
+
+    print("")
+    print("RTL Reset Domains")
+    print("=================")
+    print_reset_domain_info(reset_domain_info_dict)
+
+    print("")
+    print("Specs Reset Domains")
+    print("===================")
+    # Optionally wrap the spec text to 80 columns, or any column width
+    print(textwrap.fill(specs_reset_domains_text, width=80))
+    print("")
 
 
 def compare_reset_domains(reset_domain_info_dict, specs_reset_domain_text):
@@ -1876,10 +1959,10 @@ def print_single_state_machine_info(state_machine):
 
 def main():
     run_rtl_parameters_check = True
-    run_io_ports_check = False
-    run_module_hierarchy_check = False
-    run_clock_domains_check = False
-    run_reset_domains_check = False
+    run_io_ports_check = True
+    run_module_hierarchy_check = True
+    run_clock_domains_check = True
+    run_reset_domains_check = True
 
     # Path to your specifications Word document
     spec_docx_path = 'specs/specs.docx'
@@ -1980,11 +2063,10 @@ def main():
             # Extract clock domains information from ASTs
             clock_domains_info_dict = extract_clock_domains_from_asts(asts)
 
-            # Print the extracted clock domains information
-            if DEBUG:
-                print_clock_domains_info(clock_domains_info_dict)
-
             specs_clock_domains_text = clock_domains_chapter['content']
+
+            # Print the extracted clock domains information
+            print_clock_domains_check_info(clock_domains_info_dict, specs_clock_domains_text)
 
             # Compare Clock Domains
             final_results.append(compare_clock_domains(clock_domains_info_dict, specs_clock_domains_text))
@@ -2005,11 +2087,10 @@ def main():
             # Extract reset domains information from ASTs, passing clock domain info
             reset_domains_info_dict = extract_reset_domains_from_asts(asts, clock_domains_info_dict)
 
-            # Print the extracted reset domains information
-            if DEBUG:
-                print_reset_domain_info(reset_domains_info_dict)
-
             specs_reset_domains_text = reset_domains_chapter['content']
+
+            # Print the extracted reset domains information
+            print_reset_domains_check_info(reset_domains_info_dict, specs_reset_domains_text)
 
             # Compare Reset Domains
             final_results.append(compare_reset_domains(reset_domains_info_dict, specs_reset_domains_text))
@@ -2021,10 +2102,10 @@ def main():
         max_check_name_length = max(len(check[0]) for check in final_results)
 
         # Print all results with aligned check names
-        print("\n===== Final Results =====")
+        print("\n===== Final Results =====\n")
         for check_name, result_content in final_results:
             print(f"{check_name.ljust(max_check_name_length)} : {result_content}")
-
+        print("\n=========================")
 
 if __name__ == "__main__":
     main()
