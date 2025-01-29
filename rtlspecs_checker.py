@@ -1,6 +1,7 @@
 import os
 import base64
 import olefile
+import sympy
 import io
 import openai
 import csv
@@ -8,11 +9,16 @@ import docx
 import textwrap
 from pyverilog.vparser.parser import parse
 from pyverilog.vparser.ast import (
-    Decl, Reg, Localparam, Parameter, IntConst, Identifier,
+    Node, Decl, Concat, Reg, Wire, Localparam, Parameter, StringConst, IntConst, Identifier,
     UnaryOperator, Operator, Partselect, Pointer, NonblockingSubstitution,
     BlockingSubstitution, IfStatement, CaseStatement, Block, Rvalue,
-    Input, Output, Inout, Ioport, Port,
-    InstanceList, Instance, Always, ForStatement, Assign
+    Input, Output, Inout, Ioport, Port, Lvalue, Repeat, Cond, Width,
+    InstanceList, Instance, Always, ForStatement, Assign,
+    # Operator classes
+    Plus, Minus, Times, Divide, Mod, Power, Eq, Eql, NotEq, NotEql,
+    GreaterThan, GreaterEq, LessThan, LessEq, And, Or, Xor, Xnor,
+    Land, Lor, Sll, Srl, Sra, Uplus, Uminus, Ulnot, Unot,
+    Uand, Unand, Uor, Unor, Uxor, Uxnor,
 )
 from docx import Document
 from docx.document import Document as _Document
@@ -23,6 +29,8 @@ from lxml import etree
 from PIL import Image
 from openai import OpenAI
 from collections import defaultdict, deque
+from sympy import symbols, S
+from sympy.logic.boolalg import Boolean, BooleanFunction, And as SymAnd, Or as SymOr, Not as SymNot
 
 # Load your OpenAI API key from the environment variable
 openai.api_key = os.getenv('OPENAI_API_KEY')
@@ -137,16 +145,35 @@ def print_ast_node(node, indent):
         print(f"{indent}{node}")
 
 
+def get_lvalue(node):
+    if isinstance(node, Lvalue):
+        return get_lvalue(node.var)  # Lvalue wraps another node in .var
+    elif isinstance(node, Identifier):
+        return node.name
+    elif isinstance(node, Pointer):
+        var = get_lvalue(node.var)
+        ptr = get_rvalue(node.ptr)
+        return f"{var}[{ptr}]"
+    elif isinstance(node, Partselect):
+        var = get_lvalue(node.var)
+        msb = get_rvalue(node.msb)
+        lsb = get_rvalue(node.lsb)
+        return f"{var}[{msb}:{lsb}]"
+    else:
+        # Handle other types if necessary
+        return str(node)
+
+
+#
+#
 # def get_rvalue(value):
 #     if isinstance(value, IntConst):
 #         return value.value
 #     elif isinstance(value, Identifier):
 #         return value.name
 #     elif isinstance(value, UnaryOperator):
-#         # For unary operators like ~, !
-#         return f"{value.op}{get_rvalue(value.right)}"  # or something similar
+#         return f"{value.op}{get_rvalue(value.right)}"
 #     elif isinstance(value, Operator):
-#         # Usually a binary operator, e.g. value.left, value.op, value.right
 #         left_str = get_rvalue(value.left)
 #         right_str = get_rvalue(value.right)
 #         op_str = get_operator_symbol_by_op(value.op)
@@ -160,45 +187,202 @@ def print_ast_node(node, indent):
 #         var = get_rvalue(value.var)
 #         ptr = get_rvalue(value.ptr)
 #         return f"{var}[{ptr}]"
+#
+#     elif isinstance(value, Rvalue):
+#         # Rvalue is basically a simple wrapper with a single child (the actual expression).
+#         # We can just recurse on its only child:
+#         children = value.children()
+#         if len(children) == 1:
+#             return get_rvalue(children[0])
+#         else:
+#             # If there's more than one child (rare for a parameter), handle them as needed.
+#             # For most Verilog parameters, this won't happen, so we do:
+#             return ''.join(get_rvalue(ch) for ch in children)
+#
+#     else:
+#         # Fallback: Convert unknown AST nodes to string
+#         return str(value)
+#
+#
+#
+#
+#
+#
+# def get_rvalue(value):
+#     if isinstance(value, Rvalue):
+#         return get_rvalue(value.var)
+#     elif isinstance(value, IntConst):
+#         return value.value
+#     elif isinstance(value, StringConst):
+#         return value.value
+#     elif isinstance(value, Identifier):
+#         return value.name
+#     elif isinstance(value, (Uplus, Uminus, Ulnot, Unot, Uand, Unand, Uor, Unor, Uxor, Uxnor)):
+#         # Unary operators handling
+#         operator = get_operator_symbol(value.__class__.__name__)
+#         operand = get_rvalue(value.right if hasattr(value, 'right') else value.var)
+#         return f"({operator}{operand})"
+#     elif isinstance(value, (Plus, Minus, Times, Divide, Mod, Power,
+#                             Eq, Eql, NotEq, NotEql, GreaterThan, GreaterEq,
+#                             LessThan, LessEq, And, Or, Xor, Xnor,
+#                             Land, Lor, Sll, Srl, Sra)):
+#         # Binary operators handling
+#         operator = get_operator_symbol(value.__class__.__name__)
+#         left = get_rvalue(value.left)
+#         right = get_rvalue(value.right)
+#         return f"({left} {operator} {right})"
+#     elif isinstance(value, Partselect):
+#         var = get_rvalue(value.var)
+#         msb = get_rvalue(value.msb)
+#         lsb = get_rvalue(value.lsb)
+#         return f"{var}[{msb}:{lsb}]"
+#     elif isinstance(value, Pointer):
+#         var = get_rvalue(value.var)
+#         ptr = get_rvalue(value.ptr)
+#         return f"{var}[{ptr}]"
+#     elif isinstance(value, Concat):
+#         items = [get_rvalue(child) for child in value.children()]
+#         return f"{{{', '.join(items)}}}"
+#     elif isinstance(value, Repeat):
+#         times = get_rvalue(value.times)
+#         value_r = get_rvalue(value.value)
+#         return f"{{ {times}{{{value_r}}} }}"
+#     elif isinstance(value, Cond):
+#         cond = get_rvalue(value.cond)
+#         true_value = get_rvalue(value.true_value)
+#         false_value = get_rvalue(value.false_value)
+#         return f"({cond}) ? ({true_value}) : ({false_value})"
+#     elif isinstance(value, Width):
+#         msb = get_rvalue(value.msb)
+#         lsb = get_rvalue(value.lsb)
+#         return f"[{msb}:{lsb}]"
+#     elif isinstance(value, (list, tuple)):
+#         # Convert list or tuple to string
+#         return ', '.join(get_rvalue(v) for v in value)
+#     elif value is None:
+#         return ''
 #     else:
 #         return str(value)
+#
+
+
 
 def get_rvalue(value):
-    if isinstance(value, IntConst):
+    if isinstance(value, Rvalue):
+        # Rvalue is a wrapper that contains a single child (the actual expression)
+        children = value.children()
+        if len(children) == 1:
+            return get_rvalue(children[0])
+        else:
+            return ''.join(get_rvalue(ch) for ch in children)
+
+    elif isinstance(value, IntConst):
+        return value.value
+    elif isinstance(value, StringConst):
         return value.value
     elif isinstance(value, Identifier):
         return value.name
-    elif isinstance(value, UnaryOperator):
-        return f"{value.op}{get_rvalue(value.right)}"
-    elif isinstance(value, Operator):
-        left_str = get_rvalue(value.left)
-        right_str = get_rvalue(value.right)
-        op_str = get_operator_symbol_by_op(value.op)
-        return f"({left_str} {op_str} {right_str})"
+    elif isinstance(value, (Uplus, Uminus, Ulnot, Unot, Uand, Unand, Uor, Unor, Uxor, Uxnor)):
+        # Unary operators handling
+        operator = get_operator_symbol(value.__class__.__name__)
+        operand = get_rvalue(value.right if hasattr(value, 'right') else value.var)
+        return f"({operator}{operand})"
+    elif isinstance(value, (Plus, Minus, Times, Divide, Mod, Power,
+                            Eq, Eql, NotEq, NotEql, GreaterThan, GreaterEq,
+                            LessThan, LessEq, And, Or, Xor, Xnor,
+                            Land, Lor, Sll, Srl, Sra)):
+        # Binary operators handling
+        operator = get_operator_symbol(value.__class__.__name__)
+        left = get_rvalue(value.left)
+        right = get_rvalue(value.right)
+        return f"({left} {operator} {right})"
     elif isinstance(value, Partselect):
+        # Handling partselect
         var = get_rvalue(value.var)
         msb = get_rvalue(value.msb)
         lsb = get_rvalue(value.lsb)
         return f"{var}[{msb}:{lsb}]"
     elif isinstance(value, Pointer):
+        # Handling pointer dereferencing
         var = get_rvalue(value.var)
         ptr = get_rvalue(value.ptr)
         return f"{var}[{ptr}]"
-
-    elif isinstance(value, Rvalue):
-        # Rvalue is basically a simple wrapper with a single child (the actual expression).
-        # We can just recurse on its only child:
-        children = value.children()
-        if len(children) == 1:
-            return get_rvalue(children[0])
-        else:
-            # If there's more than one child (rare for a parameter), handle them as needed.
-            # For most Verilog parameters, this won't happen, so we do:
-            return ''.join(get_rvalue(ch) for ch in children)
-
+    elif isinstance(value, Concat):
+        # Handling concatenation
+        items = [get_rvalue(child) for child in value.children()]
+        return f"{{{', '.join(items)}}}"
+    elif isinstance(value, Repeat):
+        # Handling repeat
+        times = get_rvalue(value.times)
+        value_r = get_rvalue(value.value)
+        return f"{{ {times}{{{value_r}}} }}"
+    elif isinstance(value, Cond):
+        # Handling conditional expression
+        cond = get_rvalue(value.cond)
+        true_value = get_rvalue(value.true_value)
+        false_value = get_rvalue(value.false_value)
+        return f"({cond}) ? ({true_value}) : ({false_value})"
+    elif isinstance(value, Width):
+        # Handling width specification
+        msb = get_rvalue(value.msb)
+        lsb = get_rvalue(value.lsb)
+        return f"[{msb}:{lsb}]"
+    elif isinstance(value, (list, tuple)):
+        # Convert list or tuple to string
+        return ', '.join(get_rvalue(v) for v in value)
+    elif value is None:
+        return ''
     else:
         # Fallback: Convert unknown AST nodes to string
         return str(value)
+
+
+
+
+def get_operator_symbol(op_class_name):
+    operator_map = {
+        'Plus': '+',
+        'Minus': '-',
+        'Times': '*',
+        'Divide': '/',
+        'Mod': '%',
+        'Power': '**',
+        'Eq': '==',
+        'Eql': '===',
+        'NotEq': '!=',
+        'NotEql': '!==',
+        'GreaterThan': '>',
+        'GreaterEq': '>=',
+        'LessThan': '<',
+        'LessEq': '<=',
+        'And': '&',
+        'Or': '|',
+        'Xor': '^',
+        'Xnor': '^~',
+        'Land': '&&',
+        'Lor': '||',
+        'Sll': '<<',
+        'Srl': '>>',
+        'Sra': '>>>',
+        'Uplus': '+',
+        'Uminus': '-',
+        'Ulnot': '!',
+        'Unot': '~',
+        'Uand': '&',
+        'Unand': '~&',
+        'Uor': '|',
+        'Unor': '~|',
+        'Uxor': '^',
+        'Uxnor': '^~',
+    }
+    return operator_map.get(op_class_name, op_class_name)
+
+
+
+
+
+
+
 
 
 def get_operator_symbol_by_op(op_str):
@@ -610,7 +794,7 @@ def extract_image(run, image_filename):
 
 def extract_parameters_from_specs(chapter, module_name):
     """
-    Extracts RTL default parameters from the specifications using GPT-4o-mini for a specified module name.
+    Extracts RTL parameters from the specifications using GPT-4o-mini for a specified module name.
     Directly prints the GPT output for the module.
 
     :param chapter: A dictionary with 'title' and 'content' of the 'RTL Parameters' chapter.
@@ -726,7 +910,7 @@ def compare_parameters(rtl_params_dict, spec_params_dict):
                 total_mismatched += 1
 
     # Print summary
-    return ("RTL Default Parameters Check", f"MATCHED: {total_matched}, MISMATCHED: {total_mismatched}")
+    return ("RTL Parameters Check", f"MATCHED: {total_matched}, MISMATCHED: {total_mismatched}")
 
 
 def extract_ioports_from_specs(chapter, module_name):
@@ -949,9 +1133,9 @@ def compare_module_hierarchy(hierarchy_trees, specs_module_hierarchy_text):
         "Compare them based on module names, instance names, hierarchy structure and any any textual details, including the number of key instances. "
         "Pay close attention to numerical details and report any discrepancies. "
         "If they match in all aspects, output:\n\n"
-        "[INFO ] MATCHED\n\n"
+        "[INFO ] Module Hierarchy Check MATCHED\n\n"
         "If they do not match, output:\n\n"
-        "[ERROR] MISMATCHED. <Provide the precise reason for the mismatch.>\n\n"
+        "[ERROR] Module Hierarchy Check MISMATCHED. <Provide the precise reason for the mismatch.>\n\n"
         "Please clearly output the discrepancies show in rtl and specifications.\n\n"
         "Only output the specified message, without any additional text.\n\n"
         "Here are the module hierarchies:\n\n"
@@ -990,10 +1174,10 @@ def compare_module_hierarchy(hierarchy_trees, specs_module_hierarchy_text):
 
         # Strip off [INFO] and [ERROR] tags from the response
         if "[INFO ]" in assistant_reply:
-            result = assistant_reply.replace("[INFO ]", "").strip()
+            result = assistant_reply.replace("[INFO ] Module Hierarchy Check ", "").strip()
             return ("Module Hierarchy Check", result)
         elif "[ERROR]" in assistant_reply:
-            result = assistant_reply.replace("[ERROR]", "").strip()
+            result = assistant_reply.replace("[ERROR] Module Hierarchy Check ", "").strip()
             return ("Module Hierarchy Check", result)
         else:
             return ("Module Hierarchy Check", assistant_reply)
@@ -1195,7 +1379,6 @@ def print_clock_domains_check_info(clock_domains_info_dict, specs_clock_domains_
     :param specs_clock_domains_text: The raw text (or processed text) from the specification's 'Clock Domains' chapter.
     """
 
-    print("")
     print("RTL Clock Domains")
     print("=================")
     print_clock_domains_info(clock_domains_info_dict)
@@ -1230,9 +1413,9 @@ def compare_clock_domains(clock_domains_info_dict, specs_clock_domains_text):
         "Pay close attention to numerical details and report any discrepancies. "
         "Do not consider reset signals as part of the clock domain information. "
         "If they match in all aspects, output:\n\n"
-        "[INFO ] MATCHED\n\n"
+        "[INFO ] Clock Domains Check MATCHED\n\n"
         "If they do not match, output:\n\n"
-        "[ERROR] MISMATCHED. <Provide the precise reason for the mismatch.>\n\n"
+        "[ERROR] Clock Domains Check MISMATCHED. <Provide the precise reason for the mismatch.>\n\n"
         "Only output the specified message, without any additional text.\n\n"
         "Here are the clock domain information:\n\n"
         "RTL Clock Domains Information:\n"
@@ -1270,10 +1453,10 @@ def compare_clock_domains(clock_domains_info_dict, specs_clock_domains_text):
 
         # Return the result for final summary
         if "[INFO ]" in assistant_reply:
-            result = assistant_reply.replace("[INFO ]", "").strip()
+            result = assistant_reply.replace("[INFO ] Clock Domains Check ", "").strip()
             return ("Clock Domains Check", result)
         elif "[ERROR]" in assistant_reply:
-            result = assistant_reply.replace("[ERROR]", "").strip()
+            result = assistant_reply.replace("[ERROR] Clock Domains Check ", "").strip()
             return ("Clock Domains Check", result)
         else:
             return ("Clock Domains Check", assistant_reply)
@@ -1576,7 +1759,6 @@ def print_reset_domains_check_info(reset_domain_info_dict, specs_reset_domains_t
     :param specs_reset_domains_text: The raw text (or processed text) from the specification's 'Reset Domains' chapter.
     """
 
-    print("")
     print("RTL Reset Domains")
     print("=================")
     print_reset_domain_info(reset_domain_info_dict)
@@ -1611,9 +1793,9 @@ def compare_reset_domains(reset_domain_info_dict, specs_reset_domain_text):
         "Compare them based on module name, reset inputs, reset ports' name, reset domains, reset crossings, and any discrepancies in reset domain implementations. "
         "Pay close attention to details and report any discrepancies. "        
         "If they match in all aspects, output:\n\n"
-        "[INFO ] MATCHED\n\n"
+        "[INFO ] Reset Domains Check MATCHED\n\n"
         "If they do not match, output:\n\n"
-        "[ERROR] MISMATCHED. <Provide the precise reason for the mismatch.>\n\n"
+        "[ERROR] Reset Domains Check MISMATCHED. <Provide the precise reason for the mismatch.>\n\n"
         "Only output the specified message, without any additional text.\n\n"
         "Here are the reset domains information:\n\n"
         "RTL Reset Domains Information:\n"
@@ -1651,10 +1833,10 @@ def compare_reset_domains(reset_domain_info_dict, specs_reset_domain_text):
 
         # Return the result for final summary
         if "[INFO ]" in assistant_reply:
-            result = assistant_reply.replace("[INFO ]", "").strip()
+            result = assistant_reply.replace("[INFO ] Reset Domains Check ", "").strip()
             return ("Reset Domains Check", result)
         elif "[ERROR]" in assistant_reply:
-            result = assistant_reply.replace("[ERROR]", "").strip()
+            result = assistant_reply.replace("[ERROR] Reset Domains Check ", "").strip()
             return ("Reset Domains Check", result)
         else:
             return ("Reset Domains Check", assistant_reply)
@@ -1662,68 +1844,6 @@ def compare_reset_domains(reset_domain_info_dict, specs_reset_domain_text):
     except Exception as e:
         print(f"[ERROR] Error comparing Reset Domains from specifications and RTL: {e}")
         return ("Reset Domains Check", "Error during comparison.")
-
-
-class StateMachine:
-    def __init__(self, module_name):
-        self.module_name = module_name
-        self.state_var = None
-        self.next_state_var = None
-        self.states = {}  # Mapping from state values to state names
-        self.transitions = []  # List of transitions, each as (current_state, condition, next_state)
-
-
-def extract_state_machines_from_asts(asts):
-    state_machines = {}
-    for ast in asts:
-        for description in ast.description.definitions:
-            if hasattr(description, 'name'):
-                module_name = description.name
-                state_machine = StateMachine(module_name)
-                module_definitions = description.items
-                # Extract state variable names and state parameters
-                extract_state_variables_and_parameters(module_definitions, state_machine)
-                # Find state update and state transition always blocks
-                find_state_always_blocks(module_definitions, state_machine)
-                if state_machine.state_var and state_machine.transitions:
-                    state_machines[module_name] = state_machine
-    return state_machines
-
-def extract_state_variables_and_parameters(module_items, state_machine):
-    for item in module_items:
-        if isinstance(item, Decl):
-            for decl in item.list:
-                if isinstance(decl, Reg):
-                    if 'state' in decl.name:
-                        if not state_machine.state_var:
-                            state_machine.state_var = decl.name
-                            print(f"Found state variable: {state_machine.state_var}")
-                        else:
-                            state_machine.next_state_var = decl.name
-                            print(f"Found next state variable: {state_machine.next_state_var}")
-                elif isinstance(decl, (Localparam, Parameter)):
-                    # Extract state values
-                    state_name = decl.name
-                    state_value = get_rvalue(decl.value)
-                    state_machine.states[state_value] = state_name
-                    print(f"Found state constant: {state_name} = {state_value}")
-
-
-def find_state_always_blocks(module_items, state_machine):
-    for item in module_items:
-        if isinstance(item, Always):
-            print(f"Always block statement type: {type(item.statement)}")
-            print_ast_node(item.statement, "")
-            assigned_vars = get_assigned_vars(item.statement)
-            print(f"Assigned vars in always block: {assigned_vars}")
-            if state_machine.state_var in assigned_vars:
-                # This is the state register update always block
-                continue
-            elif state_machine.next_state_var in assigned_vars:
-                # This is the state transition always block
-                print("Found state transition always block")
-                extract_state_transitions(item.statement, state_machine)
-
 
 def get_assigned_vars(statement):
     assigned_vars = set()
@@ -1756,6 +1876,7 @@ def get_assigned_vars(statement):
         pass
     return assigned_vars
 
+
 def extract_identifiers(node):
     identifiers = set()
     if isinstance(node, Identifier):
@@ -1764,49 +1885,6 @@ def extract_identifiers(node):
         for child in node.children():
             identifiers.update(extract_identifiers(child))
     return identifiers
-
-
-def extract_state_transitions(statement, state_machine, current_state=None):
-    condition = 'default'  # Initialize condition
-    if isinstance(statement, CaseStatement):
-        # Extract the expression being switched on
-        if isinstance(statement.comp, Identifier):
-            if statement.comp.name == state_machine.state_var:
-                # Top-level case statement on the state variable
-                for case_item in statement.caselist:
-                    # Get the case condition(s)
-                    case_conditions = case_item.cond
-                    if not isinstance(case_conditions, list):
-                        case_conditions = [case_conditions]
-                    for case_cond in case_conditions:
-                        state_value = get_rvalue(case_cond)
-                        state_name = state_machine.states.get(state_value, state_value)
-                        # Recursively extract transitions for this state
-                        extract_state_transitions(case_item.statement, state_machine, current_state=state_name)
-    elif isinstance(statement, IfStatement):
-        condition = get_condition_str(statement.cond)
-        # Extract transitions from true_statement
-        extract_state_transitions(statement.true_statement, state_machine, current_state)
-        # Extract transitions from false_statement
-        if statement.false_statement:
-            extract_state_transitions(statement.false_statement, state_machine, current_state)
-    elif isinstance(statement, (NonblockingSubstitution, BlockingSubstitution)):
-        if isinstance(statement.left, Identifier) and statement.left.name == state_machine.next_state_var:
-            next_state_value = get_rvalue(statement.right)
-            next_state_name = state_machine.states.get(next_state_value, next_state_value)
-            state_machine.transitions.append((current_state, condition, next_state_name))
-            print(f"Added transition: {current_state} --({condition})--> {next_state_name}")
-    elif isinstance(statement, Block):
-        for stmt in statement.statements:
-            extract_state_transitions(stmt, state_machine, current_state)
-    elif isinstance(statement, list):
-        for stmt in statement:
-            extract_state_transitions(stmt, state_machine, current_state)
-    elif hasattr(statement, 'statement'):
-        extract_state_transitions(statement.statement, state_machine, current_state)
-    else:
-        # Handle other statement types if necessary
-        pass
 
 
 def get_condition_str(condition):
@@ -1837,21 +1915,423 @@ def get_assigned_states(statement, var_name):
             next_states.extend(get_assigned_states(case_item.statement, var_name))
     return next_states
 
+# State Machine Checks Functions
 
-def print_state_machine_info(state_machines):
-    for module_name, state_machine in state_machines.items():
-        print(f"\nState Machine in Module: {module_name}")
-        print(f"State Variable: {state_machine.state_var}")
-        print(f"Next State Variable: {state_machine.next_state_var}")
-        print("\nStates:")
-        for state_value, state_name in state_machine.states.items():
-            print(f"  {state_name} ({state_value})")
-        print("\nTransitions:")
-        for current_state, condition, next_state in state_machine.transitions:
-            current_state_name = state_machine.states.get(current_state, current_state)
-            next_state_name = state_machine.states.get(next_state, next_state)
-            print(f"  From {current_state_name} -> {next_state_name} on {condition}")
-        print("\n")
+
+class StateMachine:
+    def __init__(self, module_name):
+        self.module_name = module_name
+        self.state_var = None
+        self.next_state_var = None
+        self.states = []  # List of state names, in order
+        self.transitions = []  # List of transitions, each as (current_state, condition, next_state)
+
+
+def extract_state_machines_from_asts(asts, module_definitions):
+    state_machines = {}
+    target_module = 'rxuart'  # Specify the module you want to process
+    for ast in asts:
+        for description in ast.description.definitions:
+            if hasattr(description, 'name'):
+                module_name = description.name
+                if module_name != target_module:
+                    continue  # Skip modules that are not the target module
+                state_machine = StateMachine(module_name)
+                module_items = description.items
+
+                # Extract state variable names and state parameters
+                extract_state_variables_and_parameters(module_items, state_machine)
+
+                # Collect known variables
+                known_vars = collect_known_vars(state_machine, module_definitions)
+
+                # Find state update and state transition always blocks
+                find_state_always_blocks(module_items, state_machine, known_vars)
+
+                if state_machine.state_var and state_machine.transitions:
+                    state_machines[module_name] = state_machine
+    return state_machines
+
+
+def extract_state_variables_and_parameters(module_items, state_machine):
+    for item in module_items:
+        if isinstance(item, Decl):
+            for decl in item.list:
+                if isinstance(decl, Reg):
+                    if 'state' in decl.name:
+                        if not state_machine.state_var:
+                            state_machine.state_var = decl.name
+                            if DEBUG:
+                                print(f"Found state variable: {state_machine.state_var}")
+                        else:
+                            state_machine.next_state_var = decl.name
+                            if DEBUG:
+                                print(f"Found next state variable: {state_machine.next_state_var}")
+
+
+def find_state_always_blocks(module_items, state_machine, known_vars):
+    for item in module_items:
+        if isinstance(item, Always):
+            if DEBUG:
+                print(f"Always block statement type: {type(item.statement)}")
+                print_ast_node(item.statement, "")
+            assigned_vars = get_assigned_vars(item.statement)
+            if DEBUG:
+                print(f"Assigned vars in always block: {assigned_vars}")
+            if (state_machine.state_var in assigned_vars or
+                state_machine.next_state_var in assigned_vars):
+                if DEBUG:
+                    print(f"Found state transition always block in module {state_machine.module_name}")
+                # Start extraction with collect_states=True
+                extract_state_transitions(
+                    item.statement,
+                    state_machine,
+                    collect_states=True,
+                    known_vars=known_vars
+                )
+
+
+def collect_known_vars(state_machine, module_definitions):
+    """
+    Collects known variable names from the state machine and module definitions.
+    """
+    known_vars = set()
+
+    # Add state variables
+    known_vars.add(state_machine.state_var)
+    if state_machine.next_state_var:
+        known_vars.add(state_machine.next_state_var)
+
+    # Add input, output, inout, reg, and wire names from the module
+    module_name = state_machine.module_name
+    module_def = module_definitions.get(module_name)
+    if module_def:
+        for item in module_def.items:
+            if isinstance(item, Decl):
+                for decl in item.list:
+                    if isinstance(decl, (Input, Output, Inout, Reg, Wire)):
+                        known_vars.add(decl.name)
+
+        # Collect identifiers from the module's statements
+        for item in module_def.items:
+            if isinstance(item, Always):
+                collect_identifiers_from_statements(item.statement, known_vars)
+
+    return known_vars
+
+
+def collect_identifiers_from_statements(statement, known_vars):
+    if isinstance(statement, Identifier):
+        known_vars.add(statement.name)
+    elif hasattr(statement, 'children'):
+        for child in statement.children():
+            collect_identifiers_from_statements(child, known_vars)
+    elif isinstance(statement, list):
+        for stmt in statement:
+            collect_identifiers_from_statements(stmt, known_vars)
+    elif isinstance(statement, (Block, IfStatement, CaseStatement,
+                                NonblockingSubstitution, BlockingSubstitution, Assign)):
+        # Recursively collect from these statement types
+        if hasattr(statement, 'statement'):
+            collect_identifiers_from_statements(statement.statement, known_vars)
+        if hasattr(statement, 'true_statement'):
+            collect_identifiers_from_statements(statement.true_statement, known_vars)
+        if hasattr(statement, 'false_statement') and statement.false_statement:
+            collect_identifiers_from_statements(statement.false_statement, known_vars)
+        if hasattr(statement, 'statements'):
+            for stmt in statement.statements:
+                collect_identifiers_from_statements(stmt, known_vars)
+        if hasattr(statement, 'caselist'):
+            for case_item in statement.caselist:
+                collect_identifiers_from_statements(case_item.statement, known_vars)
+        if hasattr(statement, 'left'):
+            collect_identifiers_from_statements(statement.left, known_vars)
+        if hasattr(statement, 'right'):
+            collect_identifiers_from_statements(statement.right, known_vars)
+    # Handle other possible node types if necessary
+
+
+def get_module_definitions(asts):
+    module_definitions = {}
+    for ast in asts:
+        for definition in ast.description.definitions:
+            if hasattr(definition, 'name'):
+                module_name = definition.name
+                module_definitions[module_name] = definition
+    return module_definitions
+
+
+def extract_state_transitions(statement, state_machine, current_state=None, condition_expr=None, collect_states=False, known_vars=None):
+    """
+    Extracts state transitions from the given statement and updates the state_machine object.
+
+    :param statement: The AST node representing the statement to process.
+    :param state_machine: The StateMachine object to update.
+    :param current_state: The current state being processed.
+    :param condition_expr: The current condition as a SymPy expression.
+    :param collect_states: Boolean indicating whether to collect state names.
+    :param known_vars: Set of known variable names for accurate variable/constant identification.
+    """
+    if known_vars is None:
+        known_vars = set()
+
+    if isinstance(statement, CaseStatement):
+        comp_value = get_rvalue(statement.comp)
+        if DEBUG:
+            print(f"Processing CaseStatement with comp: {comp_value}")
+        # Check if this is the top-level case statement on the state variable
+        if comp_value == state_machine.state_var:
+            if DEBUG:
+                print("Top-level case statement on state variable")
+            collect_states = True
+            for case_item in statement.caselist:
+                case_conditions = case_item.cond
+                if not isinstance(case_conditions, list):
+                    case_conditions = [case_conditions]
+                for case_cond in case_conditions:
+                    if case_cond is None:
+                        state_name = 'default'
+                        if DEBUG:
+                            print("Processing default case")
+                    else:
+                        state_name = get_rvalue(case_cond)
+                    if not isinstance(state_name, str):
+                        state_name = str(state_name)
+                    if collect_states and state_name != 'default' and state_name not in [state_machine.state_var, state_machine.next_state_var]:
+                        if state_name not in state_machine.states:
+                            state_machine.states.append(state_name)
+                            if DEBUG:
+                                print(f"Found state: {state_name}")
+                        else:
+                            if DEBUG:
+                                print(f"State {state_name} already in list.")
+                    # Determine the next_state for recursive calls
+                    next_state = state_name if state_name != 'default' else current_state
+                    # Continue processing with the same condition_expr
+                    extract_state_transitions(
+                        case_item.statement,
+                        state_machine,
+                        current_state=next_state,
+                        condition_expr=condition_expr,
+                        collect_states=False,
+                        known_vars=known_vars
+                    )
+        else:
+            if DEBUG:
+                print("Nested case statement or case on another variable")
+            # In nested case statements, do not update current_state
+            for case_item in statement.caselist:
+                case_conditions = case_item.cond
+                if not isinstance(case_conditions, list):
+                    case_conditions = [case_conditions]
+                for case_cond in case_conditions:
+                    if case_cond is None:
+                        # Skip default case in nested case statements
+                        if DEBUG:
+                            print("Skipping default case in nested case statement")
+                        continue  # Skip processing this case
+                    # Convert the case condition to SymPy expression
+                    case_condition_expr = ast_to_sympy(case_cond)
+                    # Combine with existing condition
+                    equality_expr = sympy.Eq(ast_to_sympy(statement.comp), case_condition_expr)
+                    if condition_expr:
+                        combined_condition_expr = SymAnd(condition_expr, equality_expr)
+                    else:
+                        combined_condition_expr = equality_expr
+                    # Process the case item's statement
+                    extract_state_transitions(
+                        case_item.statement,
+                        state_machine,
+                        current_state=current_state,
+                        condition_expr=combined_condition_expr,
+                        collect_states=False,
+                        known_vars=known_vars
+                    )
+    elif isinstance(statement, IfStatement):
+        new_condition_expr = ast_to_sympy(statement.cond)
+        if condition_expr:
+            combined_condition_expr = SymAnd(condition_expr, new_condition_expr)
+        else:
+            combined_condition_expr = new_condition_expr
+        # Process the true branch
+        extract_state_transitions(
+            statement.true_statement,
+            state_machine,
+            current_state,
+            condition_expr=combined_condition_expr,
+            collect_states=False,
+            known_vars=known_vars
+        )
+        # Process the false branch
+        if statement.false_statement:
+            negated_new_condition_expr = SymNot(new_condition_expr)
+            if condition_expr:
+                combined_false_condition_expr = SymAnd(condition_expr, negated_new_condition_expr)
+            else:
+                combined_false_condition_expr = negated_new_condition_expr
+            extract_state_transitions(
+                statement.false_statement,
+                state_machine,
+                current_state,
+                condition_expr=combined_false_condition_expr,
+                collect_states=False,
+                known_vars=known_vars
+            )
+    elif isinstance(statement, (NonblockingSubstitution, BlockingSubstitution, Assign)):
+        assigned_var = get_lvalue(statement.left)
+        if assigned_var == state_machine.next_state_var or assigned_var == state_machine.state_var:
+            next_state_name = get_rvalue(statement.right)
+            if not isinstance(next_state_name, str):
+                next_state_name = str(next_state_name)
+            if next_state_name not in [state_machine.state_var, state_machine.next_state_var]:
+                if current_state is not None:
+                    # Simplify the condition expression
+                    simplified_condition = simplify_condition(condition_expr, known_vars=known_vars) if condition_expr else 'default'
+                    state_machine.transitions.append((current_state, simplified_condition, next_state_name))
+                    if DEBUG:
+                        print(f"Added transition: {current_state} --({simplified_condition})--> {next_state_name}")
+                else:
+                    if DEBUG:
+                        print(f"Skipped transition from None to {next_state_name}")
+            else:
+                if DEBUG:
+                    print(f"Skipped adding transition to variable: {next_state_name}")
+    elif isinstance(statement, Block):
+        for stmt in statement.statements:
+            extract_state_transitions(
+                stmt,
+                state_machine,
+                current_state,
+                condition_expr=condition_expr,
+                collect_states=False,
+                known_vars=known_vars
+            )
+    elif isinstance(statement, list):
+        for stmt in statement:
+            extract_state_transitions(
+                stmt,
+                state_machine,
+                current_state,
+                condition_expr=condition_expr,
+                collect_states=False,
+                known_vars=known_vars
+            )
+    elif hasattr(statement, 'statement'):
+        extract_state_transitions(
+            statement.statement,
+            state_machine,
+            current_state,
+            condition_expr=condition_expr,
+            collect_states=False,
+            known_vars=known_vars
+        )
+    else:
+        pass  # Handle other statement types if necessary
+
+
+def simplify_condition(sympy_expr, known_vars=None):
+    """
+    Simplifies the SymPy Boolean expression and converts it into a human-readable string.
+    """
+    simplified_expr = sympy.simplify_logic(sympy_expr)
+    return sympy_expr_to_str(simplified_expr, known_vars=known_vars)
+
+
+def ast_to_sympy(condition_expr):
+    """
+    Converts a Verilog AST condition expression into a SymPy Boolean expression.
+    """
+    if isinstance(condition_expr, Land):
+        left = ast_to_sympy(condition_expr.left)
+        right = ast_to_sympy(condition_expr.right)
+        return SymAnd(left, right)
+    elif isinstance(condition_expr, Lor):
+        left = ast_to_sympy(condition_expr.left)
+        right = ast_to_sympy(condition_expr.right)
+        return SymOr(left, right)
+    elif isinstance(condition_expr, (Ulnot, Unot)):
+        operand = condition_expr.right if hasattr(condition_expr, 'right') else condition_expr.var if hasattr(condition_expr, 'var') else condition_expr.expr
+        sym_operand = ast_to_sympy(operand)
+        return SymNot(sym_operand)
+    elif isinstance(condition_expr, (And, Or)):
+        left = ast_to_sympy(condition_expr.left)
+        right = ast_to_sympy(condition_expr.right)
+        return SymAnd(left, right) if isinstance(condition_expr, And) else SymOr(left, right)
+    elif isinstance(condition_expr, Eq):
+        left = ast_to_sympy(condition_expr.left)
+        right = ast_to_sympy(condition_expr.right)
+        return sympy.Eq(left, right)
+    elif isinstance(condition_expr, NotEq):
+        left = ast_to_sympy(condition_expr.left)
+        right = ast_to_sympy(condition_expr.right)
+        return SymNot(sympy.Eq(left, right))
+    elif isinstance(condition_expr, Identifier):
+        return symbols(condition_expr.name)
+    elif isinstance(condition_expr, IntConst):
+        value = condition_expr.value
+        # Preserve the original bit string as a symbol
+        return sympy.Symbol(value)
+    else:
+        # Fallback
+        return symbols(get_rvalue(condition_expr))
+
+
+def sympy_expr_to_str(expr, in_eq=False, known_vars=None):
+    """
+    Converts a SymPy Boolean expression into a human-readable string.
+    Ensures equality expressions are formatted as 'variable is constant'.
+    """
+    if known_vars is None:
+        known_vars = set()
+
+    if expr == S.true:
+        return 'True'
+    elif expr == S.false:
+        return 'False'
+    elif isinstance(expr, sympy.Symbol):
+        name = expr.name
+        # Check if the symbol is a known variable
+        if name in known_vars:
+            return name if in_eq else f"{name} is HIGH"  # It's a variable
+        else:
+            return name  # It's a constant
+    elif isinstance(expr, sympy.Integer):
+        return str(expr)
+    elif isinstance(expr, SymNot):
+        operand_str = sympy_expr_to_str(expr.args[0], in_eq=in_eq, known_vars=known_vars)
+        if operand_str.endswith("is HIGH"):
+            return operand_str.replace("is HIGH", "is LOW")
+        elif operand_str.endswith("is LOW"):
+            return operand_str.replace("is LOW", "is HIGH")
+        else:
+            return f"{operand_str} is LOW"
+    elif isinstance(expr, SymAnd):
+        return ' and '.join([sympy_expr_to_str(arg, known_vars=known_vars) for arg in expr.args])
+    elif isinstance(expr, SymOr):
+        return ' or '.join([sympy_expr_to_str(arg, known_vars=known_vars) for arg in expr.args])
+    elif isinstance(expr, sympy.Eq):
+        left, right = expr.args
+
+        # Determine if left and right are variables
+        left_is_var = is_variable(left, known_vars)
+        right_is_var = is_variable(right, known_vars)
+
+        # Swap sides if left is constant and right is variable
+        if not left_is_var and right_is_var:
+            left, right = right, left
+
+        left_str = sympy_expr_to_str(left, in_eq=True, known_vars=known_vars)
+        right_str = sympy_expr_to_str(right, in_eq=True, known_vars=known_vars)
+        return f"{left_str} is {right_str}"
+    else:
+        return str(expr)
+
+
+def is_variable(sym_expr, known_vars):
+    if isinstance(sym_expr, sympy.Symbol):
+        return sym_expr.name in known_vars
+    else:
+        return False
 
 
 def compare_state_machines(rtl_state_machine, specs_chapter_content, module_name):
@@ -1864,19 +2344,72 @@ def compare_state_machines(rtl_state_machine, specs_chapter_content, module_name
 
     # Prepare the prompt
     prompt = (
-        "You are an assistant that compares state machines from RTL code and specifications. "
-        "You will be provided with a state machine extracted from RTL code and a state machine description from specifications. "
-        "Compare them based on state names, transitions, and conditions. "
-        "Pay close attention to numerical details and report any discrepancies. "
-        "If they match in all aspects, output:\n\n"
-        "[INFO ] MATCHED\n\n"
-        "If they do not match, output:\n\n"
-        "[ERROR] MISMATCHED. <Provide the precise reason for the mismatch, including specific differences in state names, transitions, or conditions.>\n\n"
+        "You are an assistant that compares state machine extracted from RTL code with those described in specifications. "
+        "Your goal is to identify any mismatches between them, focusing on state names and signal levels (HIGH or LOW) in transition conditions.\n\n"
+        "**Important Notes:**\n\n"
+        "- **State Names Must Match Exactly:**\n"
+        "  - Any differences in state names between the RTL code and the specifications should be considered a mismatch.\n"
+        "  - For example, `RXU_IDLE` and `RXU_IDLE1` are different state names and should be reported as a mismatch.\n\n"
+        "- **Signal Levels in Transition Conditions Must Match Exactly:**\n"
+        "  - Any differences in signal levels (e.g., HIGH vs. LOW) in transition conditions between the RTL code and the specifications should be considered a mismatch.\n"
+        "  - Pay close attention to whether transitions occur on signals being HIGH or LOW.\n\n"
+        "- **Logical Equivalence of Conditions:**\n"
+        "  - **Do not consider differences in how the logical conditions are structured, including nesting, as a mismatch if the logical conditions are equivalent.**\n"
+        "  - **Only report mismatches if the logical conditions are not equivalent or if the signal levels differ.**\n"
+        "  - When comparing complex logical expressions, perform step-by-step simplification using logical identities and laws (e.g., De Morgan's laws).\n\n"
+        "- **Important Note on Condition Simplification:**\n"
+        "  - When comparing transition conditions, **always simplify the RTL and specification conditions step-by-step** to their basic signal levels.\n"
+        "  - **Only consider the final simplified conditions** when checking for mismatches.\n"
+        "  - **Do not report mismatches based on differences in expression structure, grouping, or use of parentheses**, as long as the signal levels are equivalent.\n\n"
+        "- **Example:**\n"
+        "  - **Example 1:**\n"
+        "    - **RTL Condition:** `o_break is LOW and (ck_uart is HIGH or half_baud_time is LOW)`\n"
+        "    - **Specification Condition:** `o_break is LOW and (ck_uart is HIGH or half_baud_time is LOW)`\n"
+        "    - **Explanation:** Both conditions are logically equivalent and should be considered matching.\n"
+        "  - **Example 2:**\n"
+        "    - **RTL Condition:** `o_break is LOW and zero_baud_counter is HIGH and ck_uart is LOW`\n"
+        "    - **Specification Condition:** `o_break is LOW and zero_baud_counter is HIGH and ck_uart is LOW`\n"
+        "    - **Explanation:** Both conditions are logically equivalent and should be considered matching.\n\n"
+        "- **Signal Interpretation:**\n"
+        "  - Signals can be active HIGH or active LOW, as specified.\n\n"
+        "  - **Active Levels of Signals:**\n"
+        "    - `line_synch` is an active HIGH signal indicating line synchronization.\n"
+        "      - When `line_synch` is **HIGH**, synchronization is achieved.\n"
+        "      - When `line_synch` is **LOW**, synchronization is not achieved.\n"
+        "    - `o_break` is an active HIGH signal indicating a break condition.\n"
+        "      - When `o_break` is **HIGH**, a break condition is active.\n"
+        "      - When `o_break` is **LOW**, the break condition has ended.\n"
+        "    - `ck_uart` is an active HIGH signal representing the UART line state.\n"
+        "      - When `ck_uart` is **HIGH**, the line is idle or in a stop bit.\n"
+        "      - When `ck_uart` is **LOW**, the line is in a start bit or transmitting data.\n"
+        "    - `zero_baud_counter`: Signal that is **HIGH** when the baud counter reaches zero.\n"
+        "    - `dblstop`: Signal that is **HIGH** when double stop bits are enabled.\n"
+        "    - `use_parity`: Signal that is **HIGH** when parity is used.\n"
+        "    - `data_bits`: A 2-bit signal indicating the number of data bits:\n"
+        "      - `2'b00`: 5 data bits\n"
+        "      - `2'b01`: 6 data bits\n"
+        "      - `2'b10`: 7 data bits\n"
+        "      - `2'b11`: 8 data bits\n"
+        "    - `half_baud_time`: Signal that is **HIGH** at half the baud rate interval.\n\n"
+        "**Your Task:**\n\n"
+        "- Compare the state names in the RTL code and the specifications. Any difference in state names should be considered a mismatch.\n"
+        "- Compare the transition conditions, paying close attention to signal levels (e.g., HIGH vs. LOW).\n"
+        "- **Do not consider differences in how the logical conditions are structured, including nesting, as a mismatch if they are logically equivalent.**\n"
+        "- **Only report mismatches if state names differ or if signal levels in the transition conditions differ.**\n"
+        "- Identify any mismatches in state names, signal levels, or transition conditions.\n"
+        "- Report any discrepancies, including differences in state names, signal levels, and transition conditions.\n"
+        "- **State names and explicit signal levels must match exactly.**\n\n"
+        "- **Do not consider differences in the structure of conditions (nested vs. flat) as a mismatch if the logical conditions are equivalent, but state names and signal levels must match exactly.**\n\n"
+        "**Note:**\n\n"
+        "- If they match in all aspects, output:\n\n"
+        "  [INFO ] State Machine Check MATCHED\n\n"
+        "- If they do not match, output:\n\n"
+        "  [ERROR] State Machine Check MISMATCHED. Provide the precise reason for the mismatch, including specific differences in state names, signal levels in transitions, or conditions.\n\n"
         "Only output the specified message, without any additional text.\n\n"
-        "Here are the state machines for module {}:\n\n"
-        "RTL State Machine:\n"
-        "{}\n"
-        "Specifications State Machine:\n"
+        "**State Machine for Module `{}`:**\n\n"
+        "**RTL State Machine:**\n\n"
+        "{}\n\n"
+        "**Specifications State Machine:**\n\n"
         "{}"
     ).format(module_name, rtl_state_machine_description.strip(), specs_chapter_content.strip())
 
@@ -1888,15 +2421,17 @@ def compare_state_machines(rtl_state_machine, specs_chapter_content, module_name
         completion = client.chat.completions.create(
             model='gpt-4o',
             messages=[
-                {"role": "system",
-                 "content": (
-                     "You are an assistant that compares state machines from RTL code and specifications. "
-                     "You only output the comparison result precisely as specified."
-                 )},
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an assistant that compares state machine from RTL code and specifications. "
+                        "You only output the comparison result precisely as specified."
+                    )
+                },
                 {"role": "user", "content": prompt}
             ],
             temperature=0,
-            max_tokens=500,
+            max_tokens=2000,
             n=1,
             stop=None,
         )
@@ -1909,33 +2444,32 @@ def compare_state_machines(rtl_state_machine, specs_chapter_content, module_name
 
         # Return the result for final summary
         if "[INFO ]" in assistant_reply:
-            result = assistant_reply.replace("[INFO ]", "").strip()
+            result = assistant_reply.replace("[INFO ] State Machine Check ", "").strip()
             return ("State Machine Check", result)
         elif "[ERROR]" in assistant_reply:
-            result = assistant_reply.replace("[ERROR]", "").strip()
+            result = assistant_reply.replace("[ERROR] State Machine Check ", "").strip()
             return ("State Machine Check", result)
         else:
             return ("State Machine Check", assistant_reply)
 
     except Exception as e:
-        print(f"[ERROR] Error comparing state machines from specifications and RTL: {e}")
+        print(f"[ERROR] Error comparing state machine from specifications and RTL: {e}")
         return ("State Machine Check", "Error during comparison.")
 
 
 def generate_rtl_state_machine_description(state_machine):
     """
-    Generates a textual description of the RTL state machine for inclusion in the GPT prompt.
+    Generates a textual description of the RTL state machine for inclusion in the GPT prompt
     """
     description = f"State Variable: {state_machine.state_var}\n"
     description += f"Next State Variable: {state_machine.next_state_var}\n\n"
     description += "States:\n"
-    for state_value, state_name in state_machine.states.items():
-        description += f"  {state_name} ({state_value})\n"
+    for state_name in state_machine.states:
+        description += f"  {state_name}\n"
     description += "\nTransitions:\n"
-    for current_state, condition, next_state in state_machine.transitions:
-        current_state_name = state_machine.states.get(current_state, current_state)
-        next_state_name = state_machine.states.get(next_state, next_state)
-        description += f"  From {current_state_name} -> {next_state_name} on {condition}\n"
+    for current_state, condition_expr, next_state in state_machine.transitions:
+        # The condition_expr is already a simplified, readable string
+        description += f"  From {current_state} -> {next_state} on {condition_expr}\n"
     return description
 
 
@@ -1948,21 +2482,45 @@ def print_single_state_machine_info(state_machine):
     print(f"State Variable: {state_machine.state_var}")
     print(f"Next State Variable: {state_machine.next_state_var}")
     print("\nStates:")
-    for state_value, state_name in state_machine.states.items():
-        print(f"  {state_name} ({state_value})")
+    for state_name in state_machine.states:
+        print(f"  {state_name}")
     print("\nTransitions:")
     for current_state, condition, next_state in state_machine.transitions:
-        current_state_name = state_machine.states.get(current_state, current_state)
-        next_state_name = state_machine.states.get(next_state, next_state)
-        print(f"  From {current_state_name} -> {next_state_name} on {condition}")
+        print(f"  From {current_state} -> {next_state} on {condition}")
     print("\n")
 
+
+def print_state_machine_check_info(rtl_state_machine, specs_chapter_content, module_name):
+    """
+    Prints the state machine check info for both RTL and Specifications.
+    This function reuses existing functions to display state machine info for RTL and Specs.
+    """
+    # Print RTL state machine info
+    if rtl_state_machine:
+        print("RTL State Machine Info")
+        print("======================")
+        print_single_state_machine_info(rtl_state_machine)
+    else:
+        print(f"[ERROR] State machine information not found in RTL for module {module_name}.")
+
+    # Print Specs state machine info
+    if specs_chapter_content:
+        print("Specs State Machine Info")
+        print("========================\n")
+        print(specs_chapter_content)
+    else:
+        print(f"[ERROR] State machine chapter not found in specifications for module {module_name}.")
+
+
 def main():
-    run_rtl_parameters_check = True
-    run_io_ports_check = True
-    run_module_hierarchy_check = True
-    run_clock_domains_check = True
-    run_reset_domains_check = True
+    run_checks = {
+        'rtl_parameters': True,
+        'io_ports': True,
+        'module_hierarchy': True,
+        'clock_domains': True,
+        'reset_domains': True,
+        'state_machine': True
+    }
 
     # Path to your specifications Word document
     spec_docx_path = 'specs/specs.docx'
@@ -1980,17 +2538,19 @@ def main():
     if DEBUG:
         print_ast_contents(asts)
 
+    # Collect module definitions
+    module_definitions = get_module_definitions(asts)
+
     # Extract chapters from the Word document
     chapters = extract_text_by_chapters(spec_docx_path)
     final_results = []  # Store the results as tuples (check_name, result_content)
 
-    # Find the chapter with title 'RTL Parameters'
-    parameters_chapter = next((chapter for chapter in chapters if chapter['title'] == 'RTL Parameters'), None)
-
-    if run_rtl_parameters_check:
+    if run_checks['rtl_parameters']:
+        # Find the chapter with title 'RTL Parameters'
+        parameters_chapter = next((chapter for chapter in chapters if chapter['title'] == 'RTL Parameters'), None)
         if parameters_chapter:
-            # Add header for RTL Default Parameters check
-            print("\n===== RTL Default Parameters Check =====\n")
+            # Add header for RTL Parameters check
+            print("\n===== RTL Parameters Check =====\n")
 
             # Extract parameters from specifications for each module
             specs_params_dict = {module_name: extract_parameters_from_specs(parameters_chapter, module_name) for module_name in module_names}
@@ -2007,10 +2567,9 @@ def main():
         else:
             print("[ERROR] Chapter 'RTL Parameters' not found in the specifications.")
 
-    # Find the chapter with title 'IO Ports'
-    ioports_chapter = next((chapter for chapter in chapters if chapter['title'] == 'IO Ports'), None)
-
-    if run_io_ports_check:
+    if run_checks['io_ports']:
+        # Find the chapter with title 'IO Ports'
+        ioports_chapter = next((chapter for chapter in chapters if chapter['title'] == 'IO Ports'), None)
         if ioports_chapter:
             # Add header for IO Ports check
             print("\n===== IO Ports Check =====\n")
@@ -2030,10 +2589,9 @@ def main():
         else:
             print("[ERROR] Chapter 'IO Ports' not found in the specifications.")
 
-    # Find the chapter with title 'Module Hierarchy'
-    module_hierarchy_chapter = next((chapter for chapter in chapters if chapter['title'] == 'Module Hierarchy'), None)
-
-    if run_module_hierarchy_check:
+    if run_checks['module_hierarchy']:
+        # Find the chapter with title 'Module Hierarchy'
+        module_hierarchy_chapter = next((chapter for chapter in chapters if chapter['title'] == 'Module Hierarchy'), None)
         if module_hierarchy_chapter:
             # Add header for Module Hierarchy check
             print("\n===== Module Hierarchy Check =====\n")
@@ -2052,10 +2610,9 @@ def main():
         else:
             print("[ERROR] Chapter 'Module Hierarchy' not found in the specifications.")
 
-    # Find the chapter with title 'Clock Domains' in the specifications
-    clock_domains_chapter = next((chapter for chapter in chapters if chapter['title'] == 'Clock Domains'), None)
-
-    if run_clock_domains_check:
+    if run_checks['clock_domains']:
+        # Find the chapter with title 'Clock Domains' in the specifications
+        clock_domains_chapter = next((chapter for chapter in chapters if chapter['title'] == 'Clock Domains'), None)
         if clock_domains_chapter:
             # Add header for Clock Domains Check
             print("\n===== Clock Domains Check =====\n")
@@ -2073,10 +2630,9 @@ def main():
         else:
             print("[ERROR] Chapter 'Clock Domains' not found in the specifications.")
 
-    # Find the chapter with title 'Reset Domains' in the specifications
-    reset_domains_chapter = next((chapter for chapter in chapters if chapter['title'] == 'Reset Domains'), None)
-
-    if run_reset_domains_check:
+    if run_checks['reset_domains']:
+        # Find the chapter with title 'Reset Domains' in the specifications
+        reset_domains_chapter = next((chapter for chapter in chapters if chapter['title'] == 'Reset Domains'), None)
         if reset_domains_chapter:
             # Add header for Reset Domains Check
             print("\n===== Reset Domains Check =====\n")
@@ -2097,6 +2653,34 @@ def main():
         else:
             print("[ERROR] Chapter 'Reset Domains' not found in the specifications.")
 
+    if run_checks['state_machine']:
+        # Find the chapter with title 'State Machine'
+        state_machine_chapter = next((chapter for chapter in chapters if 'state machine' in chapter['title'].lower()), None)
+        if state_machine_chapter:
+            # Add header for State Machine Check
+            print("\n===== State Machine Check =====\n")
+
+            # Extract state machine from RTL, passing module_definitions
+            rtl_state_machines = extract_state_machines_from_asts(asts, module_definitions)
+
+            # # Assuming we're focusing on the 'rxuart' module
+            module_name = 'rxuart'
+            rtl_state_machine = rtl_state_machines.get(module_name, None)
+
+            if rtl_state_machine:
+                # Get the specifications chapter content
+                specs_chapter_content = state_machine_chapter['content']
+
+                # Print State Machine info for both RTL and Specs
+                print_state_machine_check_info(rtl_state_machine, specs_chapter_content, module_name)
+
+                # Compare State Machine
+                final_results.append(compare_state_machines(rtl_state_machine, specs_chapter_content, module_name))
+            else:
+                print(f"[ERROR] State machine information not found in RTL for module {module_name}.")
+        else:
+            print("[ERROR] Chapter 'State Machine' not found in the specifications.")
+
     # Calculate the maximum length of check names for alignment
     if final_results:
         max_check_name_length = max(len(check[0]) for check in final_results)
@@ -2106,6 +2690,7 @@ def main():
         for check_name, result_content in final_results:
             print(f"{check_name.ljust(max_check_name_length)} : {result_content}")
         print("\n=========================")
+
 
 if __name__ == "__main__":
     main()
