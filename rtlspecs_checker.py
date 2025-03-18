@@ -2523,13 +2523,13 @@ def main():
     }
 
     # Path to your specifications Word document
-    spec_docx_path = 'specs/specs.docx'
+    spec_docx_path = 'specs1/specs.docx'
 
     # # List of modules' name
     module_names = ['ufifo', 'rxuart', 'txuart', 'wbuart']
 
     # Get the list of Verilog files
-    file_list = get_file_list("rtl")
+    file_list = get_file_list("rtl1")
 
     # Generate ASTs for the files
     asts = generate_asts(file_list)
