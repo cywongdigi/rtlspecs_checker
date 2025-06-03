@@ -1927,9 +1927,9 @@ class StateMachine:
         self.transitions = []  # List of transitions, each as (current_state, condition, next_state)
 
 
-def extract_state_machines_from_asts(asts, module_definitions):
+def extract_state_machines_from_asts(asts, module_definitions, target_module):
     state_machines = {}
-    target_module = 'rxuart'  # Specify the module you want to process
+    # target_module = 'rxuart'  # Specify the module you want to process
     for ast in asts:
         for description in ast.description.definitions:
             if hasattr(description, 'name'):
@@ -2513,6 +2513,44 @@ def print_state_machine_check_info(rtl_state_machine, specs_chapter_content, mod
 
 
 def main():
+    """Run RTL‑vs‑spec comparison for the selected IP design."""
+
+    # -------------------------------------------------------
+    # Prompt the user to choose an IP design to analyse
+    # -------------------------------------------------------
+    print("Dear Users, please choose one of the following digital IP that you would like to do the RTL VS Specifications comparison:")
+    print("  1. 32‑bit Wishbone Universal Asynchronous Serial Transport (WBUART32)")
+    print("  2. 128‑bit Advanced Encryption Standard (AES) / Rijndael IP Core")
+
+    choice = input("Enter choice (1 or 2): ").strip()
+    # choice = "2"
+
+    # -------------------------------------------------------
+    # Set up per‑design configuration based on the choice
+    # -------------------------------------------------------
+    if choice == "1":
+        spec_docx_path = "specs1/specs1.docx"
+        module_names = [
+            "ufifo",
+            "rxuart",
+            "txuart",
+            "wbuart",
+        ]
+        file_list = get_file_list("rtl1")
+    elif choice == "2":
+        spec_docx_path = "specs2/specs2.docx"
+        module_names = [
+            "dummy_sm",
+            "aes_rcon",
+            "aes_sbox",
+            "aes_key_expand_128",
+            "aes_cipher_top",
+        ]
+        file_list = get_file_list("rtl2")
+    else:
+        print("[ERROR] Invalid choice. Please restart the program and enter 1 or 2.")
+        return
+
     run_checks = {
         'rtl_parameters': True,
         'io_ports': True,
@@ -2521,15 +2559,6 @@ def main():
         'reset_domains': True,
         'state_machine': True
     }
-
-    # Path to your specifications Word document
-    spec_docx_path = 'specs1/specs.docx'
-
-    # # List of modules' name
-    module_names = ['ufifo', 'rxuart', 'txuart', 'wbuart']
-
-    # Get the list of Verilog files
-    file_list = get_file_list("rtl1")
 
     # Generate ASTs for the files
     asts = generate_asts(file_list)
@@ -2660,11 +2689,15 @@ def main():
             # Add header for State Machine Check
             print("\n===== State Machine Check =====\n")
 
-            # Extract state machine from RTL, passing module_definitions
-            rtl_state_machines = extract_state_machines_from_asts(asts, module_definitions)
-
             # # Assuming we're focusing on the 'rxuart' module
-            module_name = 'rxuart'
+            if choice == "1":
+                module_name = 'rxuart'
+            elif choice == "2":
+                module_name = 'dummy_sm'
+
+            # Extract state machine from RTL, passing module_definitions
+            rtl_state_machines = extract_state_machines_from_asts(asts, module_definitions, module_name)
+
             rtl_state_machine = rtl_state_machines.get(module_name, None)
 
             if rtl_state_machine:
