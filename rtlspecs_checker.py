@@ -41,6 +41,33 @@ client = openai
 # Set to True to enable debug output
 DEBUG = False
 
+# Define the model selection options
+model_option = {
+    'default': {
+        'rtl_parameters': 'gpt-4o-mini',
+        'io_ports': 'gpt-4o-mini',
+        'module_hierarchy': 'gpt-4o',
+        'clock_domains': 'gpt-4o',
+        'reset_domains': 'gpt-4o',
+        'state_machine': 'gpt-4o'
+    },
+    'all_gpt4o-mini': {
+        'rtl_parameters': 'gpt-4o-mini',
+        'io_ports': 'gpt-4o-mini',
+        'module_hierarchy': 'gpt-4o-mini',
+        'clock_domains': 'gpt-4o-mini',
+        'reset_domains': 'gpt-4o-mini',
+        'state_machine': 'gpt-4o-mini'
+    },
+    'all_gpt4o': {
+        'rtl_parameters': 'gpt-4o',
+        'io_ports': 'gpt-4o',
+        'module_hierarchy': 'gpt-4o',
+        'clock_domains': 'gpt-4o',
+        'reset_domains': 'gpt-4o',
+        'state_machine': 'gpt-4o'
+    }
+}
 
 class ModuleNode:
     def __init__(self, module_name, instance_name=None):
@@ -800,14 +827,15 @@ def extract_parameters_from_specs(chapter, module_name):
     :param chapter: A dictionary with 'title' and 'content' of the 'RTL Parameters' chapter.
     :param module_name: The module name to extract parameters for.
     """
+    model = get_model_for_check('rtl_parameters')  # Dynamically select model for parameters check
     title = chapter['title']
     content = chapter['content']
 
     # Prepare the prompt
     prompt = (
         f"Please extract the default RTL parameters' value for the module {module_name} from the following 'RTL Parameters' chapter. "
-        f"Exclude any submodule RTL default parameters and focus only on module {module_name}. Provide the details in CSV format with the headers 'Name' and 'Value'. "
-        f"Do not include any additional text or explanations. Only provide the CSV content. For example:\n\n"
+        f"Exclude any submodule RTL default parameters and focus only on module {module_name}. Provide the details in plain CSV format with the headers 'Name' and 'Value' only. "
+        f"Do not include any additional text or explanations. Only provide the CSV content without any backticks or code blocks. For example:\n\n"
         f"Name,Value\nPARAM1,VALUE1\nPARAM2,VALUE2\n\n"
         f"Now, extract the RTL default parameters:\n\n"
         f"Title: {title}\n\nContent:\n{content}\n"
@@ -816,7 +844,7 @@ def extract_parameters_from_specs(chapter, module_name):
     # Call GPT-4o-mini to extract parameters
     try:
         completion = client.chat.completions.create(
-            model='gpt-4o-mini',
+            model=model,  # Use dynamically selected model
             messages=[
                 {
                     "role": "system",
@@ -921,14 +949,16 @@ def extract_ioports_from_specs(chapter, module_name):
     :param chapter: A dictionary with 'title' and 'content' of the 'RTL Parameters' chapter.
     :param module_name: The module name to extract parameters for.
     """
+    model = get_model_for_check('io_ports')
     title = chapter['title']
     content = chapter['content']
 
     # Prepare the prompt
     prompt = (
         f"Please extract the IO ports information for the module {module_name} from the following 'IO Ports' chapter. "
-        f"Exclude any submodule IO ports' information and focus only on module {module_name}. Provide the details in CSV format with the headers 'Name','Width','Direction'. "
-        f"Do not include any additional text or explanations. Only provide the CSV content. For example:\n\n"
+        f"Exclude any submodule IO ports' information and focus only on module {module_name}. Provide the details in plain CSV format with the headers 'Name','Width','Direction' only. "
+        f"Make sure the 'Direction' values are in lowercase (e.g., 'input', 'output', 'inout'). "
+        f"Do not include any additional text or explanations. Only provide the CSV content without any backticks or code blocks. For example:\n\n"
         f"Name,Width,Direction\nPORT1,32,input\nPORT2,1,output\n\n"
         f"Now, extract the IO ports information:\n\n"
         f"Title: {title}\n\nContent:\n{content}\n"
@@ -937,7 +967,7 @@ def extract_ioports_from_specs(chapter, module_name):
     # Call GPT to extract IO ports' information
     try:
         completion = client.chat.completions.create(
-            model='gpt-4o-mini',
+            model=model,  # Use dynamically selected model
             messages=[
                 {
                     "role": "system",
@@ -1109,6 +1139,7 @@ def compare_module_hierarchy(hierarchy_trees, specs_module_hierarchy_text):
     :param specs_module_hierarchy_text: String containing the module hierarchy from the specifications.
     """
     # Convert the hierarchy_trees to text
+    model = get_model_for_check('module_hierarchy')
     rtl_module_hierarchy_text = ''
     for tree in hierarchy_trees:
         rtl_module_hierarchy_text += get_hierarchy_text(tree) + '\n'
@@ -1151,7 +1182,7 @@ def compare_module_hierarchy(hierarchy_trees, specs_module_hierarchy_text):
     # Call GPT to perform the comparison
     try:
         completion = client.chat.completions.create(
-            model='gpt-4o',
+            model=model,  # Use dynamically selected model
             messages=[
                 {"role": "system",
                  "content": (
@@ -1396,6 +1427,7 @@ def compare_clock_domains(clock_domains_info_dict, specs_clock_domains_text):
     Uses GPT to perform the comparison and outputs the result.
     """
     # Prepare the clock domain info text from RTL
+    model = get_model_for_check('clock_domains') # Dynamically select model for parameters check
     rtl_clock_domains_text = ''
     for module_name, module_info in clock_domains_info_dict.items():
         rtl_clock_domains_text += f"Module: {module_name}\n"
@@ -1430,7 +1462,7 @@ def compare_clock_domains(clock_domains_info_dict, specs_clock_domains_text):
     # Call GPT to perform the comparison
     try:
         completion = client.chat.completions.create(
-            model='gpt-4o',
+            model=model,  # Use dynamically selected model
             messages=[
                 {"role": "system",
                  "content": (
@@ -1777,6 +1809,7 @@ def compare_reset_domains(reset_domain_info_dict, specs_reset_domain_text):
     Uses GPT to perform the comparison and outputs the result.
     """
     # Prepare the reset domain info text from RTL
+    model = get_model_for_check('reset_domains')  # Dynamically select model for parameters check
     rtl_reset_domain_text = ''
     for module_name, module_info in reset_domain_info_dict.items():
         rtl_reset_domain_text += f"Module: {module_name}\n"
@@ -1810,7 +1843,7 @@ def compare_reset_domains(reset_domain_info_dict, specs_reset_domain_text):
     # Call GPT to perform the comparison
     try:
         completion = client.chat.completions.create(
-            model='gpt-4o',
+            model=model,  # Use dynamically selected model
             messages=[
                 {"role": "system",
                  "content": (
@@ -2340,6 +2373,7 @@ def compare_state_machines(rtl_state_machine, specs_chapter_content, module_name
     Uses GPT to perform the comparison and outputs the result.
     """
     # Prepare the RTL state machine description
+    model = get_model_for_check('state_machine') # Dynamically select model for parameters check
     rtl_state_machine_description = generate_rtl_state_machine_description(rtl_state_machine)
 
     # Prepare the prompt
@@ -2419,7 +2453,7 @@ def compare_state_machines(rtl_state_machine, specs_chapter_content, module_name
     # Call GPT to perform the comparison
     try:
         completion = client.chat.completions.create(
-            model='gpt-4o',
+            model=model,  # Use dynamically selected model
             messages=[
                 {
                     "role": "system",
@@ -2511,19 +2545,46 @@ def print_state_machine_check_info(rtl_state_machine, specs_chapter_content, mod
     else:
         print(f"[ERROR] State machine chapter not found in specifications for module {module_name}.")
 
+def get_model_for_check(check_name):
+    global model_option, user_selected_option  # Declare both as global
+    selected_model = model_option[user_selected_option]  # This will now work, as Python uses the global variable
+    return selected_model.get(check_name, 'gpt-4o')
 
 def main():
     """Run RTL‑vs‑spec comparison for the selected IP design."""
 
+    global user_selected_option  # Declare user_selected_option as a global variable
+
+    # Prompt the user to select the model option for the checks
+    print("\n")
+    print("Select model option:")
+    print("1. Default (GPT-4o-mini for rtl_parameters and io_ports checks, GPT-4o for others)")
+    print("2. All checks with GPT-4o-mini")
+    print("3. All checks with GPT-4o")
+
+    user_input = input("Enter your choice (1, 2 or 3): ").strip()
+
+    if user_input == '1':
+        user_selected_option = 'default'
+    elif user_input == '2':
+        user_selected_option = 'all_gpt4o-mini'
+    elif user_input == '3':
+        user_selected_option = 'all_gpt4o'
+    else:
+        print("[ERROR] Invalid choice, using default option.")
+        user_selected_option = 'default'
+
     # -------------------------------------------------------
     # Prompt the user to choose an IP design to analyse
     # -------------------------------------------------------
+    print("\n")
     print("Dear Users, please choose one of the following digital IP that you would like to do the RTL VS Specifications comparison:")
     print("  1. 32‑bit Wishbone Universal Asynchronous Serial Transport (WBUART32)")
     print("  2. 128‑bit Advanced Encryption Standard (AES) / Rijndael IP Core")
 
     choice = input("Enter choice (1 or 2): ").strip()
     # choice = "2"
+    print("\n")
 
     # -------------------------------------------------------
     # Set up per‑design configuration based on the choice
