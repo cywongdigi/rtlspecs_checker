@@ -2555,71 +2555,127 @@ def main():
 
     global user_selected_option  # Declare user_selected_option as a global variable
 
-    # Prompt the user to select the model option for the checks
-    print("\n")
-    print("Select model option:")
-    print("1. Default (GPT-4o-mini for rtl_parameters and io_ports checks, GPT-4o for others)")
-    print("2. All checks with GPT-4o-mini")
-    print("3. All checks with GPT-4o")
+    # ------------------------------------------------------------------
+    # 1.  Run‑mode selection (Normal vs Validation)
+    # ------------------------------------------------------------------
+    while True:
+        print("\nSelect run mode:")
+        print("1. Normal mode")
+        print("2. Validation mode")
+        mode_choice = input("Enter your choice (1 or 2): ").strip()
+        if mode_choice in ("1", "2"):
+            break
+        print("[WARNING] Invalid selection. Please enter 1 or 2.")
 
-    user_input = input("Enter your choice (1, 2 or 3): ").strip()
+    validation_mode = (mode_choice == "2")
 
-    if user_input == '1':
-        user_selected_option = 'default'
-    elif user_input == '2':
-        user_selected_option = 'all_gpt4o-mini'
-    elif user_input == '3':
-        user_selected_option = 'all_gpt4o'
+    # ------------------------------------------------------------------
+    # 2.  Model‑option selection (existing functionality)
+    # ------------------------------------------------------------------
+    while True:
+        print("\nSelect model option:")
+        print("1. Default (GPT‑4o‑mini for parameters & IO ports checks; GPT‑4o for module hierarchy, clock / reset domains and state machine checks)")
+        print("2. All checks with GPT‑4o‑mini")
+        print("3. All checks with GPT‑4o")
+        model_choice = input("Enter your choice (1, 2 or 3): ").strip()
+        if model_choice in ("1", "2", "3"):
+            break
+        print("[WARNING] Invalid choice. Please enter 1, 2 or 3.")
+
+    if model_choice == "1":
+        user_selected_option = "default"
+    elif model_choice == "2":
+        user_selected_option = "all_gpt4o-mini"
     else:
-        print("[ERROR] Invalid choice, using default option.")
-        user_selected_option = 'default'
+        user_selected_option = "all_gpt4o"
 
-    # -------------------------------------------------------
-    # Prompt the user to choose an IP design to analyse
-    # -------------------------------------------------------
-    print("\n")
-    print("Dear Users, please choose one of the following digital IP that you would like to do the RTL VS Specifications comparison:")
-    print("  1. 32‑bit Wishbone Universal Asynchronous Serial Transport (WBUART32)")
-    print("  2. 128‑bit Advanced Encryption Standard (AES) / Rijndael IP Core")
+    # ------------------------------------------------------------------
+    # 3.  IP‑core selection (existing functionality)
+    # ------------------------------------------------------------------
+    while True:
+        print("\nPlease choose the IP you want to analyse:")
+        print("1. 32‑bit Wishbone Universal Asynchronous Serial Transport (WBUART32)")
+        print("2. 128‑bit Advanced Encryption Standard (AES) / Rijndael IP Core")
+        ip_choice = input("Enter choice (1 or 2): ").strip()
+        if ip_choice in ("1", "2"):
+            break
+        print("[WARNING] Invalid choice. Please enter 1 or 2.")
 
-    choice = input("Enter choice (1 or 2): ").strip()
-    # choice = "2"
-    print("\n")
+    print("")
 
-    # -------------------------------------------------------
-    # Set up per‑design configuration based on the choice
-    # -------------------------------------------------------
-    if choice == "1":
-        spec_docx_path = "specs1/specs1.docx"
-        module_names = [
+    # Map IP choice to paths & module lists, taking validation_mode into account
+    if ip_choice == "1":
+        spec_docx_path = "specs1_val/specs1_val.docx" if validation_mode else "specs1/specs1.docx"
+        rtl_dir        = "rtl1_val" if validation_mode else "rtl1"
+        module_names   = [
             "ufifo",
             "rxuart",
             "txuart",
             "wbuart",
         ]
-        file_list = get_file_list("rtl1")
-    elif choice == "2":
-        spec_docx_path = "specs2/specs2.docx"
-        module_names = [
+    else:  # ip_choice == "2"
+        spec_docx_path = "specs2_val/specs2_val.docx" if validation_mode else "specs2/specs2.docx"
+        rtl_dir        = "rtl2_val" if validation_mode else "rtl2"
+        module_names   = [
             "dummy_sm",
             "aes_rcon",
             "aes_sbox",
             "aes_key_expand_128",
             "aes_cipher_top",
         ]
-        file_list = get_file_list("rtl2")
-    else:
-        print("[ERROR] Invalid choice. Please restart the program and enter 1 or 2.")
-        return
 
+    # Gather RTL files
+    file_list = get_file_list(rtl_dir)
+
+    # ------------------------------------------------------------------
+    # 4.  Check‑selection menu (new functionality)
+    # ------------------------------------------------------------------
+    while True:
+        print("\nSelect which checks to run (comma‑separated for multiple):")
+        print("1. All checks")
+        print("2. Parameters Check")
+        print("3. IO Ports Check")
+        print("4. Module Hierarchy Check")
+        print("5. Clock Domains Check")
+        print("6. Reset Domains Check")
+        print("7. State Machine Check")
+        raw = input("Enter your choice(s): ").replace(" ", "")
+        selections = raw.split(",") if raw else []
+        if selections and all(sel in {"1","2","3","4","5","6","7"} for sel in selections):
+            break
+        print("[WARNING] Invalid selection. Please try again.")
+
+    # Build the run_checks dict
     run_checks = {
-        'rtl_parameters': True,
-        'io_ports': True,
-        'module_hierarchy': True,
-        'clock_domains': True,
-        'reset_domains': True,
-        'state_machine': True
+        'rtl_parameters': False,
+        'io_ports': False,
+        'module_hierarchy': False,
+        'clock_domains': False,
+        'reset_domains': False,
+        'state_machine': False
     }
+
+    if '1' in selections:  # Option 1 overrides everything
+        for k in run_checks:
+            run_checks[k] = True
+    else:
+        mapping = {
+            '2': 'rtl_parameters',
+            '3': 'io_ports',
+            '4': 'module_hierarchy',
+            '5': 'clock_domains',
+            '6': 'reset_domains',
+            '7': 'state_machine',
+        }
+        for sel in selections:
+            run_checks[mapping[sel]] = True
+
+    # ------------------------------------------------------------------
+    # 5.  *Existing* execution flow continues here – nothing below this
+    #     point has been modified by the enhancement.  The original logic
+    #     that generates ASTs and performs the selected checks remains
+    #     unchanged.
+    # ------------------------------------------------------------------
 
     # Generate ASTs for the files
     asts = generate_asts(file_list)
@@ -2751,9 +2807,9 @@ def main():
             print("\n===== State Machine Check =====\n")
 
             # # Assuming we're focusing on the 'rxuart' module
-            if choice == "1":
+            if ip_choice == "1":
                 module_name = 'rxuart'
-            elif choice == "2":
+            elif ip_choice == "2":
                 module_name = 'dummy_sm'
 
             # Extract state machine from RTL, passing module_definitions
